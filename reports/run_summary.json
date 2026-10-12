@@ -1,0 +1,28 @@
+{
+  "data_type": "SIMULATED ONLY",
+  "seed": 2026,
+  "n_rows": 10000,
+  "n_train": 8000,
+  "n_test": 2000,
+  "synthetic_default_rate_all": 0.2751,
+  "synthetic_test_default_rate": 0.275,
+  "features_traditional": [
+    "age_years",
+    "monthly_income_inr",
+    "employment_tenure_years",
+    "debt_to_income_ratio",
+    "existing_loan_count",
+    "credit_utilization_ratio",
+    "prior_delinquencies_24m",
+    "bureau_history_available",
+    "bureau_score"
+  ],
+  "features_alternative": [
+    "utility_payment_timeliness",
+    "rental_payment_timeliness",
+    "digital_payment_regularity",
+    "cashflow_stability_index",
+    "alternative_history_months"
+  ],
+  "note": "Metrics demonstrate an engineering pipeline on generated data only. They are not estimates of real-world borrower risk or proof of alternative-data value."
+}

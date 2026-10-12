@@ -1,0 +1,87 @@
+"""Optional Streamlit demo for a SIMULATED alternative credit scoring prototype."""
+from pathlib import Path
+import joblib
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+ROOT = Path(__file__).resolve().parent
+MODEL_PATH = ROOT / "models" / "hybrid_logistic_regression.joblib"
+
+st.set_page_config(page_title="Alternative Credit Risk — Research Demo", page_icon="📊", layout="wide")
+st.title("Alternative Credit Risk — Research Prototype")
+st.error("SIMULATED DATA DEMO ONLY. This tool is not validated for real people or lending decisions. Do not enter real personal or financial data.")
+st.markdown("Estimate the output of a model trained on generated sample records. The features and outcome mechanism are simulated; the result is not a real credit score.")
+
+if not MODEL_PATH.exists():
+    st.warning("Model not found yet. Run `python train.py` first.")
+    st.stop()
+model = joblib.load(MODEL_PATH)
+
+# scikit-learn 1.8 removed LogisticRegression.multi_class from the public
+# constructor, while some serialized estimators/predict_proba paths still
+# expect the attribute. Restore it for backward-compatible inference.
+if hasattr(model, "named_steps") and "classifier" in model.named_steps:
+    classifier = model.named_steps["classifier"]
+    if classifier.__class__.__name__ == "LogisticRegression" and not hasattr(classifier, "multi_class"):
+        classifier.multi_class = "auto"
+
+with st.form("prediction_form"):
+    st.subheader("Traditional / application features")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        age = st.slider("Age (years)", 18, 80, 30)
+        income = st.number_input("Monthly income (₹)", min_value=0, max_value=1_000_000, value=40000, step=1000)
+        employment = st.slider("Employment tenure (years)", 0.0, 40.0, 4.0, 0.5)
+    with col2:
+        dti = st.slider("Debt-to-income ratio", 0.0, 1.2, 0.35, 0.01)
+        loans = st.slider("Existing loan count", 0, 10, 1)
+        utilization = st.slider("Credit utilization ratio", 0.0, 1.25, 0.4, 0.01)
+    with col3:
+        delinquencies = st.slider("Prior delinquencies (last 24 months)", 0, 5, 0)
+        has_bureau = st.checkbox("Bureau history available", value=True)
+        bureau_score_input = st.slider("Bureau score (ignored if no history)", 300, 900, 650)
+
+    st.subheader("Alternative feature examples")
+    st.caption("These are simulated behavioural summaries. In real research, their lawful availability, validity and fairness would require separate evidence and review.")
+    alt1, alt2, alt3 = st.columns(3)
+    with alt1:
+        utility = st.slider("Utility payment timeliness", 0.0, 1.0, 0.82, 0.01)
+        rental = st.slider("Rental payment timeliness", 0.0, 1.0, 0.80, 0.01)
+    with alt2:
+        digital = st.slider("Digital payment regularity", 0.0, 1.0, 0.75, 0.01)
+        cashflow = st.slider("Cash-flow stability index", 0.0, 1.0, 0.68, 0.01)
+    with alt3:
+        history_months = st.slider("Alternative history observed (months)", 0, 24, 15)
+    submitted = st.form_submit_button("Estimate synthetic model risk", type="primary")
+
+if submitted:
+    row = pd.DataFrame([{
+        "age_years": age,
+        "monthly_income_inr": float(income),
+        "employment_tenure_years": employment,
+        "debt_to_income_ratio": dti,
+        "existing_loan_count": loans,
+        "credit_utilization_ratio": utilization,
+        "prior_delinquencies_24m": delinquencies,
+        "bureau_history_available": int(has_bureau),
+        "bureau_score": float(bureau_score_input) if has_bureau else np.nan,
+        "utility_payment_timeliness": utility,
+        "rental_payment_timeliness": rental,
+        "digital_payment_regularity": digital,
+        "cashflow_stability_index": cashflow,
+        "alternative_history_months": history_months,
+    }])
+    probability = float(model.predict_proba(row)[0, 1])
+    st.subheader("Model output (simulated only)")
+    c1, c2 = st.columns(2)
+    c1.metric("Estimated default probability", f"{probability:.1%}")
+    if probability < 0.10:
+        band = "Lower model-estimated risk"
+    elif probability < 0.20:
+        band = "Middle model-estimated risk"
+    else:
+        band = "Higher model-estimated risk"
+    c2.metric("Illustrative risk band", band)
+    st.progress(min(max(probability, 0.0), 1.0))
+    st.caption("The band thresholds are arbitrary demonstration settings, not validated lending cutoffs. This output must not be used to approve, reject, price or otherwise make decisions about real applicants.")
