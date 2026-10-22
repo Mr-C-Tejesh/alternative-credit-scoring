@@ -37,10 +37,22 @@ Phase-02 additions:
     * Calibration curves image artifact exists and is non-empty.
     * Run summary JSON records evaluated metrics and binning configuration.
     * Serialized models remain loadable and output valid predictions.
+
+Phase-02.1 additions:
+- Focused generator-aligned boundary tests (TestBoundaryConditionsAndGeneratorSupport):
+    * Exact minimum boundary support acceptance across all features.
+    * Exact maximum boundary support acceptance across all features.
+    * Out-of-support lower boundary rejection for all features.
+    * Out-of-support upper boundary rejection for all features.
+    * Rejection of fractional values on integer-only features.
+    * Structural validity of no-bureau boundary case.
+    * Support for all-alternative-missing cold-start inference.
+    * CLI subprocess smoke tests for valid default, valid no-bureau, and out-of-support inputs.
 """
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -828,6 +840,211 @@ class TestCalibrationAndReporting(unittest.TestCase):
         self.assertIn("ece_10_bins", data["metrics_evaluated"])
         self.assertEqual(data.get("calibration_bins"), 10)
         self.assertEqual(data.get("calibration_strategy"), "uniform")
+
+
+# ---------------------------------------------------------------------------
+# 11. Generator support boundary tests (Phase 02.1)
+# ---------------------------------------------------------------------------
+
+class TestBoundaryConditionsAndGeneratorSupport(unittest.TestCase):
+    """Test boundary conditions aligned strictly with synthetic generator support."""
+
+    @classmethod
+    def setUpClass(cls):
+        # A valid baseline applicant within generator support
+        cls.valid_base = {
+            "age_years": 35,
+            "monthly_income_inr": 45000.0,
+            "employment_tenure_years": 5.0,
+            "debt_to_income_ratio": 0.35,
+            "existing_loan_count": 2,
+            "credit_utilization_ratio": 0.40,
+            "prior_delinquencies_24m": 1,
+            "bureau_history_available": 1,
+            "bureau_score": 680.0,
+            "utility_payment_timeliness": 0.85,
+            "rental_payment_timeliness": 0.82,
+            "digital_payment_regularity": 0.78,
+            "cashflow_stability_index": 0.70,
+            "alternative_history_months": 15,
+        }
+
+    def _make_row(self, overrides: dict | None = None) -> pd.DataFrame:
+        row = self.valid_base.copy()
+        if overrides:
+            row.update(overrides)
+        return pd.DataFrame([row])
+
+    def test_exact_minimum_boundaries_accepted(self):
+        """Values exactly at generator-supported minimums must pass validation."""
+        min_row = pd.DataFrame([{
+            "age_years": 20,
+            "monthly_income_inr": 8000.0,
+            "employment_tenure_years": 0.0,
+            "debt_to_income_ratio": 0.0,
+            "existing_loan_count": 0,
+            "credit_utilization_ratio": 0.0,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 300.0,
+            "utility_payment_timeliness": 0.05,
+            "rental_payment_timeliness": 0.05,
+            "digital_payment_regularity": 0.02,
+            "cashflow_stability_index": 0.02,
+            "alternative_history_months": 0,
+        }])
+        validation.validate_feature_frame(min_row, train.ALL_FEATURES)
+
+    def test_exact_maximum_boundaries_accepted(self):
+        """Values exactly at generator-supported maximums must pass validation."""
+        max_row = pd.DataFrame([{
+            "age_years": 65,
+            "monthly_income_inr": 250000.0,
+            "employment_tenure_years": 35.0,
+            "debt_to_income_ratio": 1.2,
+            "existing_loan_count": 8,
+            "credit_utilization_ratio": 1.25,
+            "prior_delinquencies_24m": 5,
+            "bureau_history_available": 1,
+            "bureau_score": 900.0,
+            "utility_payment_timeliness": 1.0,
+            "rental_payment_timeliness": 1.0,
+            "digital_payment_regularity": 1.0,
+            "cashflow_stability_index": 1.0,
+            "alternative_history_months": 24,
+        }])
+        validation.validate_feature_frame(max_row, train.ALL_FEATURES)
+
+    def test_values_below_minimum_boundaries_rejected(self):
+        """Values just below supported minimum boundary must raise ValidationError."""
+        below_min_cases = [
+            ("age_years", 19),
+            ("monthly_income_inr", 7999.0),
+            ("employment_tenure_years", -0.1),
+            ("debt_to_income_ratio", -0.01),
+            ("existing_loan_count", -1),
+            ("credit_utilization_ratio", -0.01),
+            ("prior_delinquencies_24m", -1),
+            ("bureau_score", 299.9),
+            ("utility_payment_timeliness", 0.049),
+            ("rental_payment_timeliness", 0.049),
+            ("digital_payment_regularity", 0.019),
+            ("cashflow_stability_index", 0.019),
+            ("alternative_history_months", -1),
+        ]
+        for feature, val in below_min_cases:
+            with self.subTest(feature=feature, val=val):
+                bad_row = self._make_row({feature: val})
+                with self.assertRaises(validation.ValidationError) as cm:
+                    validation.validate_feature_frame(bad_row, train.ALL_FEATURES)
+                self.assertIn(f"Column '{feature}'", str(cm.exception))
+
+    def test_values_above_maximum_boundaries_rejected(self):
+        """Values just above supported maximum boundary must raise ValidationError."""
+        above_max_cases = [
+            ("age_years", 66),
+            ("monthly_income_inr", 250001.0),
+            ("employment_tenure_years", 35.1),
+            ("debt_to_income_ratio", 1.21),
+            ("existing_loan_count", 9),
+            ("credit_utilization_ratio", 1.26),
+            ("prior_delinquencies_24m", 6),
+            ("bureau_score", 900.1),
+            ("utility_payment_timeliness", 1.01),
+            ("rental_payment_timeliness", 1.01),
+            ("digital_payment_regularity", 1.01),
+            ("cashflow_stability_index", 1.01),
+            ("alternative_history_months", 25),
+        ]
+        for feature, val in above_max_cases:
+            with self.subTest(feature=feature, val=val):
+                bad_row = self._make_row({feature: val})
+                with self.assertRaises(validation.ValidationError) as cm:
+                    validation.validate_feature_frame(bad_row, train.ALL_FEATURES)
+                self.assertIn(f"Column '{feature}'", str(cm.exception))
+
+    def test_fractional_values_rejected_for_integer_features(self):
+        """Integer-only features must reject non-integer fractional values."""
+        fractional_cases = [
+            ("age_years", 30.5),
+            ("existing_loan_count", 2.5),
+            ("prior_delinquencies_24m", 1.5),
+            ("alternative_history_months", 10.5),
+            ("bureau_history_available", 0.5),
+        ]
+        for feature, val in fractional_cases:
+            with self.subTest(feature=feature, val=val):
+                bad_row = self._make_row({feature: val})
+                with self.assertRaises(validation.ValidationError) as cm:
+                    validation.validate_feature_frame(bad_row, train.ALL_FEATURES)
+                self.assertTrue(
+                    "must contain integer values" in str(cm.exception)
+                    or "invalid value" in str(cm.exception),
+                    f"Unexpected exception message: {cm.exception}",
+                )
+
+    def test_valid_no_bureau_boundary_case(self):
+        """Applicants without bureau record are valid when bureau_score is NaN and flag is 0."""
+        no_bureau_row = self._make_row({
+            "bureau_history_available": 0,
+            "bureau_score": np.nan,
+        })
+        validation.validate_feature_frame(no_bureau_row, train.ALL_FEATURES)
+
+    def test_all_alternative_features_missing_boundary_case(self):
+        """Inference with all five alternative features missing must be accepted."""
+        all_alt_missing = self._make_row({
+            col: np.nan for col in train.ALTERNATIVE_FEATURES
+        })
+        validation.validate_feature_frame(all_alt_missing, train.ALL_FEATURES)
+
+    def test_cli_smoke_valid_default(self):
+        """Default CLI predict arguments must succeed with returncode 0."""
+        res = subprocess.run(
+            [sys.executable, str(ROOT / "predict.py")],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("SYNTHETIC MODEL DEMO ONLY", res.stdout)
+        self.assertIn("Estimated probability", res.stdout)
+
+    def test_cli_smoke_valid_no_bureau(self):
+        """Valid no-bureau CLI invocation must succeed with returncode 0."""
+        res = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "predict.py"),
+                "--no-bureau",
+                "--dti", "0.8",
+                "--delinquencies", "3",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0)
+        self.assertIn("SYNTHETIC MODEL DEMO ONLY", res.stdout)
+
+    def test_cli_smoke_out_of_support_rejected(self):
+        """Out-of-support CLI arguments must exit cleanly with code 1 and descriptive error."""
+        cases = [
+            (["--age", "70"], "Column 'age_years'"),
+            (["--income", "5000"], "Column 'monthly_income_inr'"),
+            (["--loans", "10"], "Column 'existing_loan_count'"),
+            (["--alternative-months", "30"], "Column 'alternative_history_months'"),
+            (["--utilization", "1.4"], "Column 'credit_utilization_ratio'"),
+            (["--delinquencies", "8"], "Column 'prior_delinquencies_24m'"),
+        ]
+        for cli_args, expected_msg in cases:
+            with self.subTest(args=cli_args):
+                res = subprocess.run(
+                    [sys.executable, str(ROOT / "predict.py")] + cli_args,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(res.returncode, 1)
+                self.assertIn("Input validation error", res.stderr)
+                self.assertIn(expected_msg, res.stderr)
 
 
 if __name__ == "__main__":

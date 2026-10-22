@@ -58,96 +58,116 @@ class ValidationError(ValueError):
 # Domain bounds & constraints
 #
 # NOTE ON SOURCE AND JUSTIFICATION:
-# These constraints reflect the documented simulation parameters and physical boundaries
-# of the prototype lending demonstration. They are NOT universal regulatory limits.
-# Accepting values outside these ranges in a real application requires a deliberate
-# extrapolation policy rather than relying on unvalidated linear model projections.
+# These constraints strictly align with the deterministic support of the
+# synthetic data generator (generate_synthetic_dataset() in train.py) and
+# the training distribution of the serialized models.
+#
+# Exact generator support:
+#   - age_years:                  integers in [20, 65] via rng.integers(20, 66)
+#   - monthly_income_inr:         floats in [8000.0, 250000.0] via np.clip
+#   - employment_tenure_years:    floats in [0.0, 35.0] via np.clip
+#   - debt_to_income_ratio:       floats in [0.0, 1.2] via np.clip
+#   - existing_loan_count:        integers in [0, 8] via np.clip
+#   - credit_utilization_ratio:   floats in [0.0, 1.25] via np.clip
+#   - prior_delinquencies_24m:    integers in [0, 5] via np.clip
+#   - bureau_history_available:   binary in {0, 1} via rng.binomial
+#   - bureau_score:               floats in [300.0, 900.0] via np.clip when bureau_history_available == 1; NaN when 0
+#   - utility_payment_timeliness: floats in [0.05, 1.0] via np.clip; permitted missing (NaN)
+#   - rental_payment_timeliness:  floats in [0.05, 1.0] via np.clip; permitted missing (NaN)
+#   - digital_payment_regularity: floats in [0.02, 1.0] via np.clip; permitted missing (NaN)
+#   - cashflow_stability_index:   floats in [0.02, 1.0] via np.clip; permitted missing (NaN)
+#   - alternative_history_months: integers in [0, 24] via np.clip; permitted missing (NaN) at inference
+#
+# IMPORTANT: These bounds reflect synthetic model training support only and must NOT
+# be described or treated as universal real-world lending or regulatory limits.
+# Deploying to real-world populations requires defining a separate, deliberate
+# model-support and out-of-distribution extrapolation policy.
 # ---------------------------------------------------------------------------
 DOMAIN_BOUNDS: dict[str, dict] = {
     "age_years": {
-        "min": 18,
-        "max": 100,
+        "min": 20,
+        "max": 65,
         "integer_only": True,
-        "justification": "Legal credit age (18+) up to 100; generator simulates 20-65.",
+        "justification": "Synthetic generator produces integers in [20, 65] via rng.integers(20, 66).",
     },
     "monthly_income_inr": {
-        "min": 0.0,
-        "max": 10_000_000.0,
+        "min": 8000.0,
+        "max": 250000.0,
         "integer_only": False,
-        "justification": "Monthly income must be non-negative; capped at 10M INR for demo.",
+        "justification": "Synthetic generator clips monthly income to [8000.0, 250000.0] INR.",
     },
     "employment_tenure_years": {
         "min": 0.0,
-        "max": 60.0,
+        "max": 35.0,
         "integer_only": False,
-        "justification": "Tenure must be non-negative; reasonable career span bound.",
+        "justification": "Synthetic generator clips employment tenure to [0.0, 35.0] years.",
     },
     "debt_to_income_ratio": {
         "min": 0.0,
         "max": 1.2,
         "integer_only": False,
-        "justification": "CLI and generator support range is [0.0, 1.2].",
+        "justification": "Synthetic generator clips debt-to-income ratio to [0.0, 1.2].",
     },
     "existing_loan_count": {
         "min": 0,
-        "max": 50,
+        "max": 8,
         "integer_only": True,
-        "justification": "Active loan count must be a non-negative integer.",
+        "justification": "Synthetic generator clips existing loan count to integer [0, 8].",
     },
     "credit_utilization_ratio": {
         "min": 0.0,
-        "max": 1.5,
+        "max": 1.25,
         "integer_only": False,
-        "justification": "Credit card / line utilization ratio (generator support up to 1.25).",
+        "justification": "Synthetic generator clips credit utilization ratio to [0.0, 1.25].",
     },
     "prior_delinquencies_24m": {
         "min": 0,
-        "max": 50,
+        "max": 5,
         "integer_only": True,
-        "justification": "Count of past 24-month delinquencies must be a non-negative integer.",
+        "justification": "Synthetic generator clips 24-month delinquency count to integer [0, 5].",
     },
     "bureau_history_available": {
         "min": 0,
         "max": 1,
         "integer_only": True,
         "allowed_values": {0, 1},
-        "justification": "Binary indicator: 0 = thin-file / no history, 1 = bureau record exists.",
+        "justification": "Synthetic generator produces binary indicator in {0, 1} (0 = no history, 1 = history available).",
     },
     "bureau_score": {
         "min": 300.0,
         "max": 900.0,
         "integer_only": False,
-        "justification": "Standard Indian bureau score range (e.g. CIBIL 300-900).",
+        "justification": "Synthetic generator clips bureau score to [300.0, 900.0] when history is available; otherwise NaN.",
     },
     "utility_payment_timeliness": {
-        "min": 0.0,
+        "min": 0.05,
         "max": 1.0,
         "integer_only": False,
-        "justification": "Payment timeliness ratio bounded in [0.0, 1.0] as documented.",
+        "justification": "Synthetic generator clips utility payment timeliness to [0.05, 1.0]; permitted missing.",
     },
     "rental_payment_timeliness": {
-        "min": 0.0,
+        "min": 0.05,
         "max": 1.0,
         "integer_only": False,
-        "justification": "Payment timeliness ratio bounded in [0.0, 1.0] as documented.",
+        "justification": "Synthetic generator clips rental payment timeliness to [0.05, 1.0]; permitted missing.",
     },
     "digital_payment_regularity": {
-        "min": 0.0,
+        "min": 0.02,
         "max": 1.0,
         "integer_only": False,
-        "justification": "Digital transaction regularity score bounded in [0.0, 1.0].",
+        "justification": "Synthetic generator clips digital payment regularity to [0.02, 1.0]; permitted missing.",
     },
     "cashflow_stability_index": {
-        "min": 0.0,
+        "min": 0.02,
         "max": 1.0,
         "integer_only": False,
-        "justification": "Cash-flow stability index bounded in [0.0, 1.0].",
+        "justification": "Synthetic generator clips cashflow stability index to [0.02, 1.0]; permitted missing.",
     },
     "alternative_history_months": {
         "min": 0,
-        "max": 120,
+        "max": 24,
         "integer_only": True,
-        "justification": "Months of recorded alternative history; non-negative integer.",
+        "justification": "Synthetic generator clips alternative history months to integer [0, 24]; permitted missing at inference.",
     },
 }
 
