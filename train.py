@@ -2,11 +2,21 @@
 
 This script is an engineering demonstration only. The generated records and targets
 are synthetic and must not be represented as real borrower evidence.
+
+Phase-01 changes (pipeline integrity):
+- Replaced the dead make_pipeline() stub and the three independent inline pipeline
+  constructions with three reusable, clearly named builder functions:
+    build_traditional_lr_pipeline()
+    build_hybrid_lr_pipeline()
+    build_hybrid_hgb_pipeline()
+- Corrected a redundant bureau-score missingness indicator (Objective B).  See the
+  _make_preprocessor() docstring for the full explanation.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Sequence
 
 import joblib
 import matplotlib
@@ -15,14 +25,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
-    classification_report,
-    ConfusionMatrixDisplay,
     log_loss,
     roc_auc_score,
     RocCurveDisplay,
@@ -31,7 +40,6 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import HistGradientBoostingClassifier
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -40,7 +48,7 @@ REPORT_DIR = ROOT / "reports"
 SEED = 2026
 N_SAMPLES = 10_000
 
-TRADITIONAL_FEATURES = [
+TRADITIONAL_FEATURES: list[str] = [
     "age_years",
     "monthly_income_inr",
     "employment_tenure_years",
@@ -51,7 +59,7 @@ TRADITIONAL_FEATURES = [
     "bureau_history_available",
     "bureau_score",
 ]
-ALTERNATIVE_FEATURES = [
+ALTERNATIVE_FEATURES: list[str] = [
     "utility_payment_timeliness",
     "rental_payment_timeliness",
     "digital_payment_regularity",
@@ -59,8 +67,25 @@ ALTERNATIVE_FEATURES = [
     "alternative_history_months",
 ]
 TARGET = "default_within_12_months"
-ALL_FEATURES = TRADITIONAL_FEATURES + ALTERNATIVE_FEATURES
+ALL_FEATURES: list[str] = TRADITIONAL_FEATURES + ALTERNATIVE_FEATURES
 
+# Alternative features whose missingness is independently informative and should
+# therefore produce a binary missingness indicator during imputation.
+# NOTE: bureau_score is deliberately excluded here — see _make_preprocessor().
+# NOTE: alternative_history_months has no missingness by design, so it also needs
+# no indicator.
+_ALT_FEATURES_WITH_MISSINGNESS: list[str] = [
+    "utility_payment_timeliness",
+    "rental_payment_timeliness",
+    "digital_payment_regularity",
+    "cashflow_stability_index",
+]
+_ALT_FEATURES_NO_MISSINGNESS: list[str] = ["alternative_history_months"]
+
+
+# ---------------------------------------------------------------------------
+# Data generation
+# ---------------------------------------------------------------------------
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-np.clip(x, -30, 30)))
@@ -147,17 +172,137 @@ def generate_synthetic_dataset(n: int = N_SAMPLES, seed: int = SEED) -> pd.DataF
     return df
 
 
-def make_pipeline() -> Pipeline:
-    numeric = Pipeline(steps=[
-        ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
-        ("scaler", StandardScaler()),
-    ])
-    prep = ColumnTransformer([("numeric", numeric, ALL_FEATURES)], remainder="drop")
+# ---------------------------------------------------------------------------
+# Preprocessing
+# ---------------------------------------------------------------------------
+
+def _make_preprocessor(
+    feature_cols: Sequence[str],
+    add_scaler: bool = True,
+) -> ColumnTransformer:
+    """Build a ColumnTransformer that imputes correctly without a redundant indicator.
+
+    WHY THE SPLIT IS NEEDED (Objective B)
+    ======================================
+    ``bureau_score`` is NaN *if and only if* ``bureau_history_available == 0``.
+    That relationship holds by construction (see ``generate_synthetic_dataset``):
+    bureau_score is set to NaN wherever bureau_available is 0, and is always
+    non-NaN wherever bureau_available is 1.
+
+    A naïve ``SimpleImputer(add_indicator=True)`` applied uniformly to all features
+    therefore creates a ``missingindicator_bureau_score`` column that is algebraically
+    identical to ``1 - bureau_history_available``.  Passing both to a linear model:
+      • inflates parameter variance via exact collinearity;
+      • splits the credit given to bureau availability between two perfectly correlated
+        columns, making the learned coefficients and permutation importances
+        uninterpretable;
+      • produced the observed equal-and-opposite coefficient artefact
+        (±0.026 in the traditional model, ±0.021 in the hybrid model).
+
+    THE FIX
+    ========
+    The preprocessor uses two separate transformer groups:
+      1. ``trad`` — all traditional features (including bureau_score), imputed
+         with ``add_indicator=False``.  Missingness for bureau_score is fully
+         captured by the explicit ``bureau_history_available`` column.
+      2. ``alt_ind`` — the four alternative features that can be genuinely missing
+         (not already covered by any other feature), imputed with
+         ``add_indicator=True`` so that their independent MCAR missingness pattern
+         is preserved as predictive signal.
+      3. ``alt_no_ind`` — ``alternative_history_months``, which has no missingness
+         in the synthetic data and requires no indicator.
+
+    This structure preserves all legitimate missingness information while eliminating
+    the redundant bureau-score indicator.
+    """
+    # Identify which feature groups are present in the requested feature_cols.
+    trad_cols = [c for c in TRADITIONAL_FEATURES if c in feature_cols]
+    alt_ind_cols = [c for c in _ALT_FEATURES_WITH_MISSINGNESS if c in feature_cols]
+    alt_no_ind_cols = [c for c in _ALT_FEATURES_NO_MISSINGNESS if c in feature_cols]
+
+    transformers = []
+
+    if trad_cols:
+        if add_scaler:
+            trad_pipe: Pipeline | SimpleImputer = Pipeline([
+                ("imputer", SimpleImputer(strategy="median", add_indicator=False)),
+                ("scaler", StandardScaler()),
+            ])
+        else:
+            trad_pipe = SimpleImputer(strategy="median", add_indicator=False)
+        transformers.append(("trad", trad_pipe, trad_cols))
+
+    if alt_ind_cols:
+        if add_scaler:
+            alt_ind_pipe: Pipeline | SimpleImputer = Pipeline([
+                ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
+                ("scaler", StandardScaler()),
+            ])
+        else:
+            alt_ind_pipe = SimpleImputer(strategy="median", add_indicator=True)
+        transformers.append(("alt_ind", alt_ind_pipe, alt_ind_cols))
+
+    if alt_no_ind_cols:
+        if add_scaler:
+            alt_no_ind_pipe: Pipeline | SimpleImputer = Pipeline([
+                ("imputer", SimpleImputer(strategy="median", add_indicator=False)),
+                ("scaler", StandardScaler()),
+            ])
+        else:
+            alt_no_ind_pipe = SimpleImputer(strategy="median", add_indicator=False)
+        transformers.append(("alt_no_ind", alt_no_ind_pipe, alt_no_ind_cols))
+
+    return ColumnTransformer(transformers, remainder="drop")
+
+
+# ---------------------------------------------------------------------------
+# Pipeline builders  (Objective A — centralized, named, reusable)
+# ---------------------------------------------------------------------------
+
+def build_traditional_lr_pipeline() -> Pipeline:
+    """Logistic Regression on traditional/application features only.
+
+    Preprocessing: median imputation (no bureau-score indicator; see
+    _make_preprocessor) + StandardScaler, fitted on training data.
+    """
     return Pipeline([
-        ("preprocess", prep),
+        ("preprocess", _make_preprocessor(TRADITIONAL_FEATURES, add_scaler=True)),
         ("classifier", LogisticRegression(max_iter=2000, random_state=SEED)),
     ])
 
+
+def build_hybrid_lr_pipeline() -> Pipeline:
+    """Logistic Regression on traditional + alternative features.
+
+    Preprocessing: corrected ColumnTransformer (no bureau-score indicator, but
+    retains indicators for the four genuinely-missing alternative features) +
+    StandardScaler, fitted on training data.
+    """
+    return Pipeline([
+        ("preprocess", _make_preprocessor(ALL_FEATURES, add_scaler=True)),
+        ("classifier", LogisticRegression(max_iter=2000, random_state=SEED)),
+    ])
+
+
+def build_hybrid_hgb_pipeline() -> Pipeline:
+    """HistGradientBoosting on traditional + alternative features.
+
+    HistGradientBoostingClassifier handles NaN natively; the explicit
+    SimpleImputer is retained so the pipeline is self-contained and the corrected
+    preprocessor keeps the feature-name contract consistent with the linear models.
+    No StandardScaler is used (not needed for tree-based models).
+    """
+    return Pipeline([
+        ("preprocess", _make_preprocessor(ALL_FEATURES, add_scaler=False)),
+        ("classifier", HistGradientBoostingClassifier(
+            max_iter=160, learning_rate=0.08, max_leaf_nodes=15, random_state=SEED
+        )),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Evaluation helpers
+# ---------------------------------------------------------------------------
 
 def metric_row(name: str, y_true: pd.Series, probs: np.ndarray) -> dict:
     return {
@@ -185,6 +330,10 @@ def plot_comparison(metrics: pd.DataFrame) -> None:
     plt.close(fig)
 
 
+# ---------------------------------------------------------------------------
+# Training workflow
+# ---------------------------------------------------------------------------
+
 def main() -> None:
     for folder in (DATA_DIR, MODEL_DIR, REPORT_DIR):
         folder.mkdir(parents=True, exist_ok=True)
@@ -194,52 +343,43 @@ def main() -> None:
     train_df, test_df = train_test_split(df, test_size=0.20, random_state=SEED, stratify=df[TARGET])
     y_train, y_test = train_df[TARGET], test_df[TARGET]
 
-    feature_sets = {
-        "Traditional baseline": TRADITIONAL_FEATURES,
-        "Hybrid (traditional + alternative)": ALL_FEATURES,
+    # --- Traditional Logistic Regression baseline ---
+    trad_pipe = build_traditional_lr_pipeline()
+    trad_pipe.fit(train_df[TRADITIONAL_FEATURES], y_train)
+    trad_probs = trad_pipe.predict_proba(test_df[TRADITIONAL_FEATURES])[:, 1]
+    joblib.dump(trad_pipe, MODEL_DIR / "traditional_baseline.joblib")
+
+    # --- Hybrid Logistic Regression ---
+    hybrid_lr_pipe = build_hybrid_lr_pipeline()
+    hybrid_lr_pipe.fit(train_df[ALL_FEATURES], y_train)
+    hybrid_lr_probs = hybrid_lr_pipe.predict_proba(test_df[ALL_FEATURES])[:, 1]
+    joblib.dump(hybrid_lr_pipe, MODEL_DIR / "hybrid_logistic_regression.joblib")
+
+    # --- Hybrid HistGradientBoosting ---
+    hybrid_hgb_pipe = build_hybrid_hgb_pipeline()
+    hybrid_hgb_pipe.fit(train_df[ALL_FEATURES], y_train)
+    hybrid_hgb_probs = hybrid_hgb_pipe.predict_proba(test_df[ALL_FEATURES])[:, 1]
+    joblib.dump(hybrid_hgb_pipe, MODEL_DIR / "hybrid_hist_gradient_boosting.joblib")
+
+    pipelines = {
+        "Traditional baseline": trad_pipe,
+        "Hybrid (traditional + alternative)": hybrid_lr_pipe,
+        "Hybrid (HistGradientBoosting)": hybrid_hgb_pipe,
     }
-    pipelines = {}
-    scores = {}
-    rows = []
-    for name, cols in feature_sets.items():
-        # Separate columns for each fit; all preprocessing is fit only on training data.
-        numeric = Pipeline(steps=[
-            ("imputer", SimpleImputer(strategy="median", add_indicator=True)),
-            ("scaler", StandardScaler()),
-        ])
-        prep = ColumnTransformer([("numeric", numeric, cols)], remainder="drop")
-        pipe = Pipeline([
-            ("preprocess", prep),
-            ("classifier", LogisticRegression(max_iter=2000, random_state=SEED)),
-        ])
-        pipe.fit(train_df[cols], y_train)
-        # Compatibility with scikit-learn 1.8 inference behaviour.
-        classifier = pipe.named_steps["classifier"]
-        if classifier.__class__.__name__ == "LogisticRegression" and not hasattr(classifier, "multi_class"):
-            classifier.multi_class = "auto"
-        probs = pipe.predict_proba(test_df[cols])[:, 1]
-        pipelines[name] = pipe
-        scores[name] = probs
-        rows.append(metric_row(name, y_test, probs))
-        joblib.dump(pipe, MODEL_DIR / ("traditional_baseline.joblib" if name == "Traditional baseline" else "hybrid_logistic_regression.joblib"))
+    scores = {
+        "Traditional baseline": trad_probs,
+        "Hybrid (traditional + alternative)": hybrid_lr_probs,
+        "Hybrid (HistGradientBoosting)": hybrid_hgb_probs,
+    }
 
-    # An additional, modest non-linear model on the same synthetic feature set.
-    # Keep median imputation inside a pipeline and fit exclusively on the training split.
-    tree_numeric = Pipeline(steps=[("imputer", SimpleImputer(strategy="median", add_indicator=True))])
-    tree_prep = ColumnTransformer([("numeric", tree_numeric, ALL_FEATURES)], remainder="drop")
-    tree_pipe = Pipeline([
-        ("preprocess", tree_prep),
-        ("classifier", HistGradientBoostingClassifier(max_iter=160, learning_rate=0.08, max_leaf_nodes=15, random_state=SEED)),
-    ])
-    tree_pipe.fit(train_df[ALL_FEATURES], y_train)
-    tree_probs = tree_pipe.predict_proba(test_df[ALL_FEATURES])[:, 1]
-    pipelines["Hybrid (HistGradientBoosting)"] = tree_pipe
-    scores["Hybrid (HistGradientBoosting)"] = tree_probs
-    rows.append(metric_row("Hybrid (HistGradientBoosting)", y_test, tree_probs))
-    joblib.dump(tree_pipe, MODEL_DIR / "hybrid_hist_gradient_boosting.joblib")
-
+    rows = [
+        metric_row("Traditional baseline", y_test, trad_probs),
+        metric_row("Hybrid (traditional + alternative)", y_test, hybrid_lr_probs),
+        metric_row("Hybrid (HistGradientBoosting)", y_test, hybrid_hgb_probs),
+    ]
     metrics = pd.DataFrame(rows)
     metrics.to_csv(REPORT_DIR / "test_metrics.csv", index=False)
+
     prevalence = float(y_test.mean())
     (REPORT_DIR / "run_summary.json").write_text(json.dumps({
         "data_type": "SIMULATED ONLY",
@@ -251,7 +391,11 @@ def main() -> None:
         "synthetic_test_default_rate": prevalence,
         "features_traditional": TRADITIONAL_FEATURES,
         "features_alternative": ALTERNATIVE_FEATURES,
-        "note": "Metrics demonstrate an engineering pipeline on generated data only. They are not estimates of real-world borrower risk or proof of alternative-data value."
+        "note": (
+            "Metrics demonstrate an engineering pipeline on generated data only. "
+            "They are not estimates of real-world borrower risk or proof of "
+            "alternative-data value."
+        ),
     }, indent=2))
 
     # ROC and precision-recall curves
@@ -276,17 +420,26 @@ def main() -> None:
 
     # Test-set permutation importance for the hybrid logistic pipeline.
     # Evaluate importance on the test set for demonstration, not for tuning the model.
-    hybrid = pipelines["Hybrid (traditional + alternative)"]
+    hybrid_lr = pipelines["Hybrid (traditional + alternative)"]
     perm = permutation_importance(
-        hybrid, test_df[ALL_FEATURES], y_test,
+        hybrid_lr, test_df[ALL_FEATURES], y_test,
         scoring="roc_auc", n_repeats=5, random_state=SEED, n_jobs=-1,
     )
-    imp = pd.DataFrame({"feature": ALL_FEATURES, "auc_drop_mean": perm.importances_mean, "auc_drop_std": perm.importances_std})
-    imp.sort_values("auc_drop_mean", ascending=False).to_csv(REPORT_DIR / "permutation_importance.csv", index=False)
+    imp = pd.DataFrame({
+        "feature": ALL_FEATURES,
+        "auc_drop_mean": perm.importances_mean,
+        "auc_drop_std": perm.importances_std,
+    })
+    imp.sort_values("auc_drop_mean", ascending=False).to_csv(
+        REPORT_DIR / "permutation_importance.csv", index=False
+    )
     top = imp.sort_values("auc_drop_mean", ascending=True).tail(12)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.barh(top["feature"], top["auc_drop_mean"], xerr=top["auc_drop_std"])
-    ax.set_title("Permutation importance — hybrid logistic model\nSynthetic test data only; association, not causation")
+    ax.set_title(
+        "Permutation importance — hybrid logistic model\n"
+        "Synthetic test data only; association, not causation"
+    )
     ax.set_xlabel("Mean decrease in ROC-AUC after permutation")
     fig.tight_layout()
     fig.savefig(REPORT_DIR / "permutation_importance.png", dpi=160)
@@ -301,7 +454,9 @@ def main() -> None:
             p = probs[subgroup_mask.to_numpy()]
             if subgroup_y.nunique() == 2:
                 subgroup_rows.append(metric_row(name, subgroup_y, p))
-        pd.DataFrame(subgroup_rows).to_csv(REPORT_DIR / "no_bureau_history_subgroup_metrics.csv", index=False)
+        pd.DataFrame(subgroup_rows).to_csv(
+            REPORT_DIR / "no_bureau_history_subgroup_metrics.csv", index=False
+        )
 
     # A small labelled example set for the UI. This file contains synthetic test samples.
     display_cols = ["synthetic_applicant_id"] + ALL_FEATURES + [TARGET]
