@@ -35,5 +35,14 @@
   ],
   "calibration_bins": 10,
   "calibration_strategy": "uniform",
+  "threshold_analysis": {
+    "data_partition": "training_out_of_fold",
+    "method": "5-fold stratified cross-validation",
+    "threshold_grid_min": 0.05,
+    "threshold_grid_max": 0.95,
+    "threshold_grid_step": 0.05,
+    "n_thresholds": 19,
+    "note": "Threshold metrics evaluated strictly on out-of-fold training data to prevent leakage; final held-out test data was NOT used for threshold selection."
+  },
   "note": "Metrics demonstrate an engineering pipeline on generated data only. They are not estimates of real-world borrower risk or proof of alternative-data value."
 }

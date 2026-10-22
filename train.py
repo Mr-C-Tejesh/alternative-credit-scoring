@@ -19,6 +19,12 @@ Phase-02 changes (input validation & credit risk metrics):
     * Kolmogorov-Smirnov (KS) statistic (max separation between default and non-default distributions).
     * Expected Calibration Error (ECE) with uniform 10-bin partitioning.
 - Automated reliability diagram generation: reports/calibration_curves.png.
+
+Phase-03 changes (illustrative scoring, threshold analysis & local explainability):
+- Out-of-fold leakage-safe threshold sensitivity analysis on the training partition:
+    * 5-fold StratifiedKFold on training data only (test set strictly preserved).
+    * Precision, recall, specificity, F1, balanced accuracy, and counts across 0.05-0.95 grid.
+    * Artifacts: reports/threshold_analysis.csv and reports/threshold_analysis.png.
 """
 from __future__ import annotations
 
@@ -47,7 +53,7 @@ from sklearn.metrics import (
     RocCurveDisplay,
     PrecisionRecallDisplay,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -487,6 +493,157 @@ def plot_comparison(metrics: pd.DataFrame) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Threshold sensitivity analysis (Phase 03 — Objective C)
+# ---------------------------------------------------------------------------
+
+def calculate_threshold_metrics(
+    y_true: np.ndarray,
+    probabilities: np.ndarray,
+    thresholds: Sequence[float] | None = None,
+    model_name: str = "Model",
+    data_partition: str = "training_out_of_fold",
+    method: str = "5-fold stratified cross-validation",
+    threshold: float | None = None,
+) -> Any:
+    """Calculate confusion-matrix and classification metrics across a threshold grid.
+
+    Decision policy:
+        Positive class is default (1).
+        Applicant is predicted as default if predicted probability >= threshold.
+        Zero denominators are safely handled to prevent NaN metrics.
+    """
+    single_threshold_mode = False
+    if threshold is not None:
+        thresholds = [float(threshold)]
+        single_threshold_mode = True
+    elif thresholds is None:
+        thresholds = [round(t, 2) for t in np.arange(0.05, 0.96, 0.05)]
+
+    y = np.asarray(y_true, dtype=int)
+    probs = np.asarray(probabilities, dtype=float)
+    if y.ndim != 1 or probs.ndim != 1:
+        raise ValueError("y_true and probabilities must be 1D arrays.")
+    if len(y) != len(probs):
+        raise ValueError(f"Length mismatch: y_true ({len(y)}) vs probabilities ({len(probs)}).")
+
+    rows = []
+    for t in thresholds:
+        pred = (probs >= t).astype(int)
+        tp = int(np.sum((y == 1) & (pred == 1)))
+        fp = int(np.sum((y == 0) & (pred == 1)))
+        tn = int(np.sum((y == 0) & (pred == 0)))
+        fn = int(np.sum((y == 1) & (pred == 0)))
+
+        precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0.0
+        recall = float(tp / (tp + fn)) if (tp + fn) > 0 else 0.0
+        specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
+        fpr = float(fp / (fp + tn)) if (fp + tn) > 0 else 0.0
+        fnr = float(fn / (fn + tp)) if (fn + tp) > 0 else 0.0
+        f1 = (
+            float(2.0 * precision * recall / (precision + recall))
+            if (precision + recall) > 0
+            else 0.0
+        )
+        balanced_acc = float(0.5 * (recall + specificity))
+
+        rows.append({
+            "model": model_name,
+            "threshold": float(t),
+            "precision": precision,
+            "recall": recall,
+            "specificity": specificity,
+            "f1_score": f1,
+            "balanced_accuracy": balanced_acc,
+            "false_positive_rate": fpr,
+            "false_negative_rate": fnr,
+            "true_positives": tp,
+            "true_negatives": tn,
+            "false_positives": fp,
+            "false_negatives": fn,
+            "data_partition": data_partition,
+            "method": method,
+        })
+    return rows[0] if single_threshold_mode else rows
+
+
+def compute_oof_predictions(
+    train_df: pd.DataFrame,
+    seed: int = SEED,
+    n_splits: int = 5,
+) -> dict[str, np.ndarray]:
+    """Obtain leakage-safe out-of-fold predicted probabilities on the training partition.
+
+    Uses StratifiedKFold on the training partition so that preprocessing and model
+    fitting are strictly isolated to each fold's training slice. Final test labels
+    are never touched during threshold analysis.
+    """
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    y_train = train_df[TARGET].to_numpy()
+
+    oof_trad = np.zeros(len(train_df), dtype=float)
+    oof_hybrid_lr = np.zeros(len(train_df), dtype=float)
+    oof_hybrid_hgb = np.zeros(len(train_df), dtype=float)
+
+    for fold_idx, (trn_idx, val_idx) in enumerate(skf.split(train_df, y_train)):
+        fold_train = train_df.iloc[trn_idx]
+        fold_val = train_df.iloc[val_idx]
+        fold_y_train = y_train[trn_idx]
+
+        # 1. Traditional baseline pipeline
+        pipe_trad = build_traditional_lr_pipeline()
+        pipe_trad.fit(fold_train[TRADITIONAL_FEATURES], fold_y_train)
+        oof_trad[val_idx] = pipe_trad.predict_proba(fold_val[TRADITIONAL_FEATURES])[:, 1]
+
+        # 2. Hybrid LR pipeline
+        pipe_hlr = build_hybrid_lr_pipeline()
+        pipe_hlr.fit(fold_train[ALL_FEATURES], fold_y_train)
+        oof_hybrid_lr[val_idx] = pipe_hlr.predict_proba(fold_val[ALL_FEATURES])[:, 1]
+
+        # 3. Hybrid HGB pipeline
+        pipe_hhgb = build_hybrid_hgb_pipeline()
+        pipe_hhgb.fit(fold_train[ALL_FEATURES], fold_y_train)
+        oof_hybrid_hgb[val_idx] = pipe_hhgb.predict_proba(fold_val[ALL_FEATURES])[:, 1]
+
+    return {
+        "Traditional baseline": oof_trad,
+        "Hybrid (traditional + alternative)": oof_hybrid_lr,
+        "Hybrid (HistGradientBoosting)": oof_hybrid_hgb,
+    }
+
+
+def plot_threshold_analysis(threshold_df: pd.DataFrame) -> None:
+    """Plot precision, recall, and F1 across thresholds for the models."""
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
+    models = [
+        "Traditional baseline",
+        "Hybrid (traditional + alternative)",
+        "Hybrid (HistGradientBoosting)",
+    ]
+    for ax, model_name in zip(axes, models):
+        sub = threshold_df[threshold_df["model"] == model_name]
+        ax.plot(sub["threshold"], sub["precision"], label="Precision", color="#1f77b4", linewidth=1.8)
+        ax.plot(sub["threshold"], sub["recall"], label="Recall (Sensitivity)", color="#d62728", linewidth=1.8)
+        ax.plot(sub["threshold"], sub["f1_score"], label="F1 Score", color="#2ca02c", linewidth=1.8, linestyle="--")
+        ax.axvline(0.10, color="gray", linestyle=":", alpha=0.7, label="Demo risk cutoff (0.10)" if model_name == models[0] else "")
+        ax.axvline(0.20, color="gray", linestyle="-.", alpha=0.7, label="Demo risk cutoff (0.20)" if model_name == models[0] else "")
+        ax.set_title(model_name, fontsize=10)
+        ax.set_xlabel("Decision threshold")
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(-0.02, 1.02)
+        ax.grid(True, alpha=0.3)
+    axes[0].set_ylabel("Metric score")
+    axes[0].legend(loc="lower left", fontsize=8)
+    fig.suptitle(
+        "Threshold sensitivity analysis — 5-fold cross-validation out-of-fold training data\n"
+        "(Synthetic demonstration only; trade-off analysis, not a lending decision policy)",
+        fontsize=11,
+    )
+    fig.tight_layout()
+    fig.savefig(REPORT_DIR / "threshold_analysis.png", dpi=160)
+    plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Training workflow
 # ---------------------------------------------------------------------------
 
@@ -508,6 +665,20 @@ def main() -> None:
     validate_feature_frame(train_df[ALL_FEATURES], ALL_FEATURES)
     validate_feature_frame(test_df[TRADITIONAL_FEATURES], TRADITIONAL_FEATURES)
     validate_feature_frame(test_df[ALL_FEATURES], ALL_FEATURES)
+
+    # Phase 03: Out-of-fold threshold sensitivity analysis on training partition (leakage-safe)
+    print("Computing 5-fold cross-validation out-of-fold predictions on training partition...")
+    oof_scores = compute_oof_predictions(train_df, seed=SEED, n_splits=5)
+    threshold_rows = []
+    for model_name, oof_probs in oof_scores.items():
+        threshold_rows.extend(calculate_threshold_metrics(
+            y_true=y_train.to_numpy(),
+            probabilities=oof_probs,
+            model_name=model_name,
+        ))
+    threshold_df = pd.DataFrame(threshold_rows)
+    threshold_df.to_csv(REPORT_DIR / "threshold_analysis.csv", index=False)
+    plot_threshold_analysis(threshold_df)
 
     # --- Traditional Logistic Regression baseline ---
     trad_pipe = build_traditional_lr_pipeline()
@@ -568,6 +739,18 @@ def main() -> None:
         ],
         "calibration_bins": 10,
         "calibration_strategy": "uniform",
+        "threshold_analysis": {
+            "data_partition": "training_out_of_fold",
+            "method": "5-fold stratified cross-validation",
+            "threshold_grid_min": 0.05,
+            "threshold_grid_max": 0.95,
+            "threshold_grid_step": 0.05,
+            "n_thresholds": 19,
+            "note": (
+                "Threshold metrics evaluated strictly on out-of-fold training data to prevent leakage; "
+                "final held-out test data was NOT used for threshold selection."
+            ),
+        },
         "note": (
             "Metrics demonstrate an engineering pipeline on generated data only. "
             "They are not estimates of real-world borrower risk or proof of "

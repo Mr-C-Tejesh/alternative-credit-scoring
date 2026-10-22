@@ -6,7 +6,17 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from validation import validate_feature_frame, ValidationError, ALL_FEATURES
+from explainability import explain_logistic_prediction
+from risk_scoring import (
+    DEFAULT_BASE_ODDS,
+    DEFAULT_BASE_SCORE,
+    DEFAULT_MAX_SCORE,
+    DEFAULT_MIN_SCORE,
+    DEFAULT_PDO,
+    map_probability_to_risk_band,
+    probability_to_score,
+)
+from validation import ALL_FEATURES, ValidationError, validate_feature_frame
 
 ROOT = Path(__file__).resolve().parent
 MODEL_PATH = ROOT / "models" / "hybrid_logistic_regression.joblib"
@@ -23,8 +33,8 @@ def main() -> None:
     parser.add_argument("--delinquencies", type=int, default=0)
     parser.add_argument("--no-bureau", action="store_true", help="simulate no bureau history")
     parser.add_argument("--bureau-score", type=float, default=650)
-    parser.add_argument("--utility", type=float, default=0.82, help="payment timeliness, 0 to 1")
-    parser.add_argument("--rental", type=float, default=0.80, help="payment timeliness, 0 to 1")
+    parser.add_argument("--utility", type=float, default=0.82, help="payment timeliness, 0.05 to 1")
+    parser.add_argument("--rental", type=float, default=0.80, help="payment timeliness, 0.05 to 1")
     parser.add_argument("--digital-regularity", type=float, default=0.75)
     parser.add_argument("--cashflow-stability", type=float, default=0.68)
     parser.add_argument("--alternative-months", type=int, default=15)
@@ -49,6 +59,7 @@ def main() -> None:
         "alternative_history_months": args.alternative_months,
     }])
 
+    # Pre-inference validation
     try:
         validate_feature_frame(row, expected_features=ALL_FEATURES)
     except ValidationError as err:
@@ -56,9 +67,46 @@ def main() -> None:
 
     model = joblib.load(MODEL_PATH)
     p = float(model.predict_proba(row)[0, 1])
-    print("SYNTHETIC MODEL DEMO ONLY — NOT A REAL CREDIT SCORE")
-    print(f"Estimated probability under the simulated model: {p:.1%}")
-    print("This output is not validated for real borrowers and must not be used for lending decisions.")
+
+    # Phase 03: Illustrative credit score & risk band
+    score_res = probability_to_score(p)
+    risk_band = map_probability_to_risk_band(p)
+
+    # Phase 03: Exact additive local feature explanation
+    explanation = explain_logistic_prediction(model, row, top_k=3, validate=False)
+
+    print("================================================================================")
+    print("SYNTHETIC MODEL DEMO ONLY — PREDICTION & EXPLANATION")
+    print("================================================================================")
+    print("Model: Hybrid Logistic Regression (synthetic demonstration prototype)")
+    print()
+    print(f"Estimated probability of default (12m): {p:.1%}")
+    print(f"Illustrative Credit Score:             {score_res.display_score} / {DEFAULT_MAX_SCORE} (range: {DEFAULT_MIN_SCORE}–{DEFAULT_MAX_SCORE})")
+    print(f"Illustrative Risk Band:                {risk_band}")
+    print()
+    print("Scoring Model Assumptions:")
+    print(f"  • Base score: {int(DEFAULT_BASE_SCORE)} at {int(DEFAULT_BASE_ODDS)}:1 good-to-bad odds (p ≈ {1.0 / (DEFAULT_BASE_ODDS + 1.0):.2%})")
+    print(f"  • Points to Double the Odds (PDO): {int(DEFAULT_PDO)}")
+    print(f"  • Raw score: {score_res.raw_score:.1f} (clamped to [{DEFAULT_MIN_SCORE}, {DEFAULT_MAX_SCORE}])")
+    print("  • Note: Educational transformation only; NOT an official credit bureau score.")
+    print()
+    print("Local Feature Contributions (Additive log-odds decomposition):")
+    print(f"  Baseline Log-Odds Intercept: {explanation.intercept:+.4f}")
+    print(f"  Model Decision Log-Odds:     {explanation.model_decision_function:+.4f} (reconstructed: {explanation.reconstructed_logit:+.4f})")
+    print()
+    print("  Top factors increasing modeled default risk (+ log-odds):")
+    for item in explanation.top_risk_increasing:
+        print(f"    + {item['readable_name']}: {item['contribution']:+.4f}")
+    print()
+    print("  Top factors decreasing modeled default risk (- log-odds):")
+    for item in explanation.top_risk_decreasing:
+        print(f"    - {item['readable_name']}: {item['contribution']:+.4f}")
+    print()
+    print("IMPORTANT DISCLAIMER:")
+    print("This output is generated from synthetic simulation data. It is an educational")
+    print("demonstration only. It has NOT been validated for real borrowers, does NOT")
+    print("convey credit approval or rejection, and MUST NOT be used for real lending decisions.")
+    print("================================================================================")
 
 
 if __name__ == "__main__":

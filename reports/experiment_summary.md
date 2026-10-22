@@ -1,12 +1,12 @@
 # Experiment Summary — Synthetic Alternative Credit Scoring
 
-**Experiment ID:** SYN-BASELINE-002
-**Status:** Completed as an engineering demonstration only
-**Dataset:** 10,000 generated synthetic records (`data/synthetic_applicants.csv`)
-**Seed:** 2026
-**Split:** Stratified random 80/20 train/test split
-**Target:** `default_within_12_months` (synthetic binary outcome)
-**Calibration binning:** Uniform probability partitioning, 10 bins
+- **Experiment ID:** SYN-BASELINE-003
+- **Status:** Completed as an engineering demonstration only
+- **Dataset:** 10,000 generated synthetic records (`data/synthetic_applicants.csv`)
+- **Seed:** 2026
+- **Split:** Stratified random 80/20 train/test split (8,000 train / 2,000 test)
+- **Target:** `default_within_12_months` (synthetic binary outcome)
+- **Calibration binning:** Uniform probability partitioning, 10 bins
 
 ---
 
@@ -42,7 +42,7 @@ For the synthetic subgroup with no bureau history available (`bureau_history_ava
 ## 3. Metric definitions and methodology
 
 ### Score orientation
-In all models and evaluation routines, predictions represent the **modeled probability of borrower default within 12 months** (positive class $Y = 1$). A **higher predicted probability denotes higher credit risk**.
+In all models and evaluation routines, raw predictions represent the **modeled probability of borrower default within 12 months** (positive class $Y = 1$). A **higher predicted probability denotes higher credit risk**.
 
 ### Ranking & discrimination metrics (order-preserving)
 1. **ROC-AUC (Receiver Operating Characteristic — Area Under Curve):**
@@ -89,18 +89,108 @@ ECE is sensitive to the number of bins ($M$) and binning strategy (uniform vs. q
 
 ---
 
-## 5. Visual artifacts generated
+## 5. Illustrative credit scoring & risk bands
+
+To provide an intuitive interface familiar to credit professionals, default probabilities are mapped to a traditional 300–850 scoring scale using the industry-standard Points to Double the Odds (PDO) formulation.
+
+### Probability-to-Score Transformation
+The transformation converts default probability $p$ into a credit score where **higher scores indicate lower default risk** (higher creditworthiness).
+$$\text{Odds} = \frac{1 - p}{p} \quad (\text{good-to-bad odds})$$
+$$\text{Factor} = \frac{\text{PDO}}{\ln(2)}$$
+$$\text{Offset} = \text{Base Score} - \text{Factor} \cdot \ln(\text{Base Odds})$$
+$$\text{Score} = \text{Offset} + \text{Factor} \cdot \ln\left(\frac{1 - p}{p}\right) = \text{Offset} - \text{Factor} \cdot \ln\left(\frac{p}{1 - p}\right)$$
+
+### Configuration Parameters
+- **Base Score:** 600
+- **Base Odds:** 50:1 good-to-bad ($p = \frac{1}{51} \approx 1.961\% \to \text{Score} = 600.0$)
+- **Points to Double the Odds (PDO):** 20 (doubling good odds to 100:1 yields $+20$ points $\to 620$; halving good odds to 25:1 yields $-20$ points $\to 580$)
+- **Score Bounds:** $[300, 850]$ with clamping at extreme probabilities ($p \to 0 \implies 850$, $p \to 1 \implies 300$).
+
+### Illustrative Model Risk Bands
+These bands are illustrative engineering demonstrations and do **not** represent statutory or regulatory credit ratings:
+- **Lower model-estimated risk:** Modeled default probability $p < 0.10$ (Illustrative score $\ge 552$)
+- **Middle model-estimated risk:** Modeled default probability $0.10 \le p < 0.20$ (Illustrative score $510 \le \text{score} < 552$)
+- **Higher model-estimated risk:** Modeled default probability $p \ge 0.20$ (Illustrative score $< 510$)
+
+---
+
+## 6. Out-of-fold threshold sensitivity analysis (Training Partition)
+
+### Data Leakage Prevention Methodology
+Evaluating classification decision thresholds on the final held-out test partition introduces optimistic bias and data snooping leakage. In this pipeline:
+1. Decision thresholds ($\tau \in [0.05, 0.95]$ in increments of $0.05$) are evaluated **strictly on out-of-fold (OOF) predictions** generated across a 5-fold stratified cross-validation of the **training set (8,000 samples)**.
+2. In each cross-validation fold, the preprocessing pipeline (imputation, standard scaling) is fitted solely on that fold's training slice.
+3. The final 2,000 test records are strictly held out to evaluate final generalizability and are **never** used for threshold selection.
+
+### Key Threshold Metrics (Out-of-Fold Training Partition)
+
+The table below summarizes performance across five representative decision thresholds ($\tau \in \{0.10, 0.20, 0.30, 0.40, 0.50\}$) for all three models:
+
+| Model | Threshold ($\tau$) | Precision | Recall (TPR) | False Positive Rate | False Negative Rate | Balanced Accuracy |
+|:---|---:|---:|---:|---:|---:|---:|
+| **Traditional baseline** | 0.10 | 0.3466 | 0.9600 | 0.6870 | 0.0400 | 0.6365 |
+| Traditional baseline | 0.20 | 0.4252 | 0.8319 | 0.4268 | 0.1681 | 0.7025 |
+| Traditional baseline | 0.30 | 0.5074 | 0.6815 | 0.2511 | 0.3185 | 0.7152 |
+| Traditional baseline | 0.40 | 0.5818 | 0.5266 | 0.1436 | 0.4734 | 0.6915 |
+| Traditional baseline | 0.50 | 0.6556 | 0.3848 | 0.0767 | 0.6152 | 0.6540 |
+| **Hybrid Logistic Regression** | 0.10 | 0.4773 | 0.9464 | 0.3933 | 0.0536 | 0.7765 |
+| Hybrid Logistic Regression | 0.20 | 0.5747 | 0.8805 | 0.2473 | 0.1195 | 0.8166 |
+| Hybrid Logistic Regression | 0.30 | 0.6556 | 0.8087 | 0.1612 | 0.1913 | 0.8237 |
+| Hybrid Logistic Regression | 0.40 | 0.7141 | 0.7388 | 0.1123 | 0.2612 | 0.8132 |
+| Hybrid Logistic Regression | 0.50 | 0.7602 | 0.6611 | 0.0792 | 0.3389 | 0.7910 |
+| **Hybrid HistGradientBoosting** | 0.10 | 0.4904 | 0.9196 | 0.3626 | 0.0804 | 0.7785 |
+| Hybrid HistGradientBoosting | 0.20 | 0.5832 | 0.8537 | 0.2316 | 0.1463 | 0.8111 |
+| Hybrid HistGradientBoosting | 0.30 | 0.6530 | 0.7874 | 0.1588 | 0.2126 | 0.8143 |
+| Hybrid HistGradientBoosting | 0.40 | 0.7053 | 0.7297 | 0.1157 | 0.2703 | 0.8069 |
+| Hybrid HistGradientBoosting | 0.50 | 0.7488 | 0.6488 | 0.0826 | 0.3512 | 0.7831 |
+
+Full metrics across all 19 thresholds are exported in `reports/threshold_analysis.csv` and visualized in `reports/threshold_analysis.png`.
+
+### Decision Threshold Trade-Offs & Business Cost Matrices
+No single decision threshold is universally optimal in credit underwriting:
+- **Low Thresholds ($\tau \approx 0.10$):** Maximize default detection (Recall $> 94\%$), minimizing costly credit defaults (False Negatives). However, False Positive Rates are elevated ($25\% - 68\%$), rejecting many creditworthy borrowers and forfeiting net interest margin.
+- **High Thresholds ($\tau \approx 0.50$):** Maximize precision ($65\% - 76\%$) and borrower acceptance, minimizing rejected good borrowers. However, False Negative Rates climb ($33\% - 61\%$), admitting severe default risk onto the loan balance sheet.
+- **Optimal Cutoff Selection:** In commercial deployment, the threshold must be chosen by minimizing expected financial loss under an asymmetric cost matrix:
+  $$\text{Expected Loss} = C_{\text{FN}} \cdot \text{FN} + C_{\text{FP}} \cdot \text{FP} - \text{Margin}_{\text{TN}} \cdot \text{TN}$$
+  where the cost of a credit default ($C_{\text{FN}}$) is typically $4\times$ to $10\times$ larger than the opportunity cost of rejecting an applicant ($C_{\text{FP}}$).
+
+---
+
+## 7. Exact additive local feature explanations (Hybrid Logistic Regression)
+
+To satisfy interpretability and adverse-action transparency requirements, local predictions from the hybrid linear model are decomposed exactly into additive feature contributions.
+
+### Additive Log-Odds Decomposition
+For an applicant's preprocessed feature vector $\mathbf{x}' \in \mathbb{R}^M$, the model's log-odds decision function is an exact linear combination of the model coefficients $\boldsymbol{\beta}$ and intercept $\beta_0$:
+$$\text{decision\_function}(\mathbf{x}') = \beta_0 + \sum_{j=1}^M \beta_j x'_j$$
+$$\text{contribution}_j = \beta_j x'_j$$
+$$\text{Reconstructed Log-Odds} = \beta_0 + \sum_{j=1}^M \text{contribution}_j$$
+
+### Properties & Verification
+- **Numerical Reconstruction:** Tested across multiple applicants, the difference $|\text{Reconstructed} - \text{decision\_function}|$ is smaller than $10^{-14}$ (exact machine precision, well within the $10^{-5}$ tolerance).
+- **Directional Interpretation:**
+  - $\text{contribution}_j > 0$: Increases modeled log-odds of default (elevates default risk; decreases illustrative credit score).
+  - $\text{contribution}_j < 0$: Decreases modeled log-odds of default (lowers default risk; increases illustrative credit score).
+- **Adverse-Action Factors:** Sorting positive contributions in descending order identifies the top drivers elevating an applicant's default risk (e.g., past delinquencies, high debt-to-income ratio), providing the mathematical foundation for adverse-action notices.
+
+---
+
+## 8. Visual and tabular artifacts generated
 
 - `reports/metric_comparison.png`: Bar comparison of test discrimination metrics.
 - `reports/roc_curves.png`: ROC curves for all three models with diagonal reference.
 - `reports/precision_recall_curves.png`: Precision-recall curves displaying trade-offs across thresholds.
 - `reports/calibration_curves.png`: Reliability diagrams plotting observed default rate against mean predicted probability across 10 uniform bins, including an ideal 45-degree calibration line.
 - `reports/permutation_importance.png`: Feature importance assessing test AUC drop under permutation.
+- `reports/threshold_analysis.png`: 4-panel threshold evaluation grid showing Precision-Recall, Sensitivity-Specificity, Error Rates (FPR/FNR), and Balanced Accuracy vs. Decision Threshold.
+- `reports/threshold_analysis.csv`: Complete tabular export of 19 thresholds $\times$ 3 models evaluated on training out-of-fold data.
+- `reports/run_summary.json`: Machine-readable summary of dataset parameters, evaluated metrics, and threshold evaluation methodology.
 
 ---
 
-## 6. Interpretation limits & synthetic data disclaimer
+## 9. Interpretation limits & synthetic data disclaimer
 
 1. **Synthetic data only:** The dataset was generated locally using seed 2026. The alternative-feature relationship with default was explicitly authored into the data-generation formula. The observed hybrid performance lift confirms pipeline execution and feature recovery in this synthetic scenario; it does **not** prove the empirical efficacy, validity, fairness, or legal permissibility of alternative credit scoring in real-world lending.
 2. **Domain bounds:** Model validation adheres to explicit demo bounds (e.g., DTI $\in [0.0, 1.2]$, bureau score $\in [300, 900]$). Extrapolation to arbitrary borrower profiles requires deliberate, domain-specific out-of-distribution policies.
-3. **No causal inference:** Permutation importance reflects statistical predictive association under the simulated data mechanism, not causal impact.
+3. **No causal inference:** Permutation importance and linear feature contributions reflect statistical predictive association under the simulated data mechanism, not causal impact.
+4. **No underwriting authority:** The illustrative credit scores (300–850) and model risk bands are educational representations of model default probability. They do not convey credit approval, credit rejection, or credit bureau score authority.
