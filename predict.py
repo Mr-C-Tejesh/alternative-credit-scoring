@@ -1,9 +1,12 @@
 """Run a sample prediction with the saved HYBRID model (synthetic demonstration only)."""
 from pathlib import Path
 import argparse
+import sys
 import joblib
 import numpy as np
 import pandas as pd
+
+from validation import validate_feature_frame, ValidationError, ALL_FEATURES
 
 ROOT = Path(__file__).resolve().parent
 MODEL_PATH = ROOT / "models" / "hybrid_logistic_regression.joblib"
@@ -27,9 +30,8 @@ def main() -> None:
     parser.add_argument("--alternative-months", type=int, default=15)
     args = parser.parse_args()
     if not MODEL_PATH.exists():
-        raise SystemExit("Saved model not found. Run `python train.py` first.")
+        sys.exit("Saved model not found. Run `python train.py` first.")
 
-    model = joblib.load(MODEL_PATH)
     row = pd.DataFrame([{
         "age_years": args.age,
         "monthly_income_inr": args.income,
@@ -46,6 +48,13 @@ def main() -> None:
         "cashflow_stability_index": args.cashflow_stability,
         "alternative_history_months": args.alternative_months,
     }])
+
+    try:
+        validate_feature_frame(row, expected_features=ALL_FEATURES)
+    except ValidationError as err:
+        sys.exit(f"Input validation error: {err}")
+
+    model = joblib.load(MODEL_PATH)
     p = float(model.predict_proba(row)[0, 1])
     print("SYNTHETIC MODEL DEMO ONLY — NOT A REAL CREDIT SCORE")
     print(f"Estimated probability under the simulated model: {p:.1%}")

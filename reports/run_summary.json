@@ -24,5 +24,16 @@
     "cashflow_stability_index",
     "alternative_history_months"
   ],
+  "metrics_evaluated": [
+    "roc_auc",
+    "gini_coefficient",
+    "ks_statistic",
+    "average_precision",
+    "brier_score",
+    "log_loss",
+    "ece_10_bins"
+  ],
+  "calibration_bins": 10,
+  "calibration_strategy": "uniform",
   "note": "Metrics demonstrate an engineering pipeline on generated data only. They are not estimates of real-world borrower risk or proof of alternative-data value."
 }

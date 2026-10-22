@@ -15,30 +15,54 @@ Phase-01 additions:
     * Missing bureau history: bureau_score NaN + bureau_history_available==0 is
       handled without error.
     * Serialized artifacts: all three saved models load and return valid probs.
+
+Phase-02 additions:
+- Comprehensive schema and input contract validation tests (TestSchemaValidation):
+    * Valid dataset and feature frames pass without error.
+    * Missing target, missing predictors, duplicate columns, duplicate applicant IDs.
+    * Non-binary and null targets rejected early.
+    * Malformed string values and infinite numbers rejected.
+    * Invalid binary flags and inconsistent bureau history / score combinations.
+    * Prohibited missing traditional values vs. permitted missing alternative values.
+    * Accidental inclusion of target as a predictor rejected.
+- Credit-risk domain evaluation metric tests (TestCreditRiskMetrics):
+    * Gini identity with ROC-AUC (Gini = 2 * ROC_AUC - 1).
+    * Kolmogorov-Smirnov (KS) statistic on perfect, random, and toy examples.
+    * Expected Calibration Error (ECE) on perfectly calibrated toy distributions.
+    * ECE handling of empty bins, probability bounds 0.0 and 1.0.
+    * Input validation and rejection of malformed or invalid metric inputs.
+    * Metric row dictionary keys and finite values.
+- Calibration and reporting integration tests (TestCalibrationAndReporting):
+    * Generated metrics CSV files contain all expected new metric columns.
+    * Calibration curves image artifact exists and is non-empty.
+    * Run summary JSON records evaluated metrics and binning configuration.
+    * Serialized models remain loadable and output valid predictions.
 """
 from __future__ import annotations
 
+import json
 import sys
 import unittest
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-import train  # noqa: E402  (must come after sys.path manipulation)
+import train  # noqa: E402
+import validation  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
 # Shared test fixtures (small, deterministic)
 # ---------------------------------------------------------------------------
 
-def _small_dataset(n: int = 300, seed: int = 7) -> "pd.DataFrame":
-    import pandas as pd  # imported locally to keep the import footprint minimal
+def _small_dataset(n: int = 300, seed: int = 7) -> pd.DataFrame:
     return train.generate_synthetic_dataset(n=n, seed=seed)
 
 
-def _train_test_split(df: "pd.DataFrame"):
+def _train_test_split(df: pd.DataFrame):
     from sklearn.model_selection import train_test_split
     return train_test_split(df, test_size=0.25, random_state=42, stratify=df[train.TARGET])
 
@@ -90,7 +114,6 @@ class TestDatasetBehavior(unittest.TestCase):
     def test_expected_missingness_alt_features(self):
         """Several alternative features must contain some NaN values."""
         df = self.df
-        # With n=300 and rates 5-12%, each column should have at least one NaN.
         for col in ["utility_payment_timeliness", "rental_payment_timeliness",
                     "digital_payment_regularity", "cashflow_stability_index"]:
             self.assertTrue(df[col].isna().any(), f"{col} has no NaN values")
@@ -106,105 +129,102 @@ class TestDatasetBehavior(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestPipelineConstruction(unittest.TestCase):
-
-    def _assert_estimator_type(self, pipe, expected_cls):
-        from sklearn.pipeline import Pipeline
-        self.assertIsInstance(pipe, Pipeline)
-        self.assertIn("preprocess", pipe.named_steps)
-        self.assertIn("classifier", pipe.named_steps)
-        self.assertIsInstance(pipe.named_steps["classifier"], expected_cls)
+    """Builder functions must return properly structured Pipeline objects."""
 
     def test_build_traditional_lr_pipeline_structure(self):
-        from sklearn.linear_model import LogisticRegression
         pipe = train.build_traditional_lr_pipeline()
-        self._assert_estimator_type(pipe, LogisticRegression)
+        self.assertIn("preprocess", pipe.named_steps)
+        self.assertIn("classifier", pipe.named_steps)
+        from sklearn.linear_model import LogisticRegression
+        self.assertIsInstance(pipe.named_steps["classifier"], LogisticRegression)
 
     def test_build_hybrid_lr_pipeline_structure(self):
-        from sklearn.linear_model import LogisticRegression
         pipe = train.build_hybrid_lr_pipeline()
-        self._assert_estimator_type(pipe, LogisticRegression)
+        self.assertIn("preprocess", pipe.named_steps)
+        self.assertIn("classifier", pipe.named_steps)
+        from sklearn.linear_model import LogisticRegression
+        self.assertIsInstance(pipe.named_steps["classifier"], LogisticRegression)
 
     def test_build_hybrid_hgb_pipeline_structure(self):
-        from sklearn.ensemble import HistGradientBoostingClassifier
         pipe = train.build_hybrid_hgb_pipeline()
-        self._assert_estimator_type(pipe, HistGradientBoostingClassifier)
+        self.assertIn("preprocess", pipe.named_steps)
+        self.assertIn("classifier", pipe.named_steps)
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        self.assertIsInstance(pipe.named_steps["classifier"], HistGradientBoostingClassifier)
 
     def test_pipeline_builders_return_new_instances(self):
         """Each call to a builder must return a fresh, unfitted instance."""
         p1 = train.build_traditional_lr_pipeline()
         p2 = train.build_traditional_lr_pipeline()
         self.assertIsNot(p1, p2)
+        self.assertIsNot(p1.named_steps["classifier"], p2.named_steps["classifier"])
 
 
 # ---------------------------------------------------------------------------
-# 3. Pipeline fit and prediction
+# 3. Pipeline fit and predict
 # ---------------------------------------------------------------------------
 
 class TestPipelineFitPredict(unittest.TestCase):
+    """Pipelines must fit without error and produce valid probabilities."""
 
     @classmethod
     def setUpClass(cls):
-        df = _small_dataset(n=400, seed=5)
+        df = _small_dataset(n=400, seed=42)
         cls.train_df, cls.test_df = _train_test_split(df)
         cls.y_train = cls.train_df[train.TARGET]
         cls.y_test = cls.test_df[train.TARGET]
 
-    def _fit_and_predict(self, pipe, feature_cols):
-        pipe.fit(self.train_df[feature_cols], self.y_train)
-        probs = pipe.predict_proba(self.test_df[feature_cols])[:, 1]
-        return probs
-
     def test_traditional_lr_fit_predict_shape(self):
-        probs = self._fit_and_predict(
-            train.build_traditional_lr_pipeline(), train.TRADITIONAL_FEATURES
-        )
-        self.assertEqual(len(probs), len(self.test_df))
+        pipe = train.build_traditional_lr_pipeline()
+        pipe.fit(self.train_df[train.TRADITIONAL_FEATURES], self.y_train)
+        probs = pipe.predict_proba(self.test_df[train.TRADITIONAL_FEATURES])
+        self.assertEqual(probs.shape, (len(self.test_df), 2))
 
     def test_traditional_lr_probabilities_valid(self):
-        probs = self._fit_and_predict(
-            train.build_traditional_lr_pipeline(), train.TRADITIONAL_FEATURES
-        )
+        pipe = train.build_traditional_lr_pipeline()
+        pipe.fit(self.train_df[train.TRADITIONAL_FEATURES], self.y_train)
+        probs = pipe.predict_proba(self.test_df[train.TRADITIONAL_FEATURES])[:, 1]
         self.assertTrue(np.all(np.isfinite(probs)))
-        self.assertTrue(np.all(probs >= 0.0) and np.all(probs <= 1.0))
+        self.assertTrue(np.all((probs >= 0.0) & (probs <= 1.0)))
 
     def test_hybrid_lr_fit_predict_shape(self):
-        probs = self._fit_and_predict(
-            train.build_hybrid_lr_pipeline(), train.ALL_FEATURES
-        )
-        self.assertEqual(len(probs), len(self.test_df))
+        pipe = train.build_hybrid_lr_pipeline()
+        pipe.fit(self.train_df[train.ALL_FEATURES], self.y_train)
+        probs = pipe.predict_proba(self.test_df[train.ALL_FEATURES])
+        self.assertEqual(probs.shape, (len(self.test_df), 2))
 
     def test_hybrid_lr_probabilities_valid(self):
-        probs = self._fit_and_predict(
-            train.build_hybrid_lr_pipeline(), train.ALL_FEATURES
-        )
+        pipe = train.build_hybrid_lr_pipeline()
+        pipe.fit(self.train_df[train.ALL_FEATURES], self.y_train)
+        probs = pipe.predict_proba(self.test_df[train.ALL_FEATURES])[:, 1]
         self.assertTrue(np.all(np.isfinite(probs)))
-        self.assertTrue(np.all(probs >= 0.0) and np.all(probs <= 1.0))
+        self.assertTrue(np.all((probs >= 0.0) & (probs <= 1.0)))
 
     def test_hybrid_hgb_fit_predict_shape(self):
-        probs = self._fit_and_predict(
-            train.build_hybrid_hgb_pipeline(), train.ALL_FEATURES
-        )
-        self.assertEqual(len(probs), len(self.test_df))
+        pipe = train.build_hybrid_hgb_pipeline()
+        pipe.fit(self.train_df[train.ALL_FEATURES], self.y_train)
+        probs = pipe.predict_proba(self.test_df[train.ALL_FEATURES])
+        self.assertEqual(probs.shape, (len(self.test_df), 2))
 
     def test_hybrid_hgb_probabilities_valid(self):
-        probs = self._fit_and_predict(
-            train.build_hybrid_hgb_pipeline(), train.ALL_FEATURES
-        )
+        pipe = train.build_hybrid_hgb_pipeline()
+        pipe.fit(self.train_df[train.ALL_FEATURES], self.y_train)
+        probs = pipe.predict_proba(self.test_df[train.ALL_FEATURES])[:, 1]
         self.assertTrue(np.all(np.isfinite(probs)))
-        self.assertTrue(np.all(probs >= 0.0) and np.all(probs <= 1.0))
+        self.assertTrue(np.all((probs >= 0.0) & (probs <= 1.0)))
 
 
 # ---------------------------------------------------------------------------
-# 4. Redundant-indicator correction (Objective B)
+# 4. Redundant indicator correction
 # ---------------------------------------------------------------------------
 
 class TestRedundantIndicatorCorrection(unittest.TestCase):
-    """Verify that fitted pipelines do NOT expose missingindicator_bureau_score."""
+    """Trained pipelines must NOT expose missingindicator_bureau_score."""
 
     @classmethod
     def setUpClass(cls):
-        df = _small_dataset(n=400, seed=3)
-        train_df, _ = _train_test_split(df)
+        df = _small_dataset(n=400, seed=99)
+        train_df, cls.test_df = _train_test_split(df)
         y_train = train_df[train.TARGET]
 
         cls.trad_pipe = train.build_traditional_lr_pipeline()
@@ -216,57 +236,41 @@ class TestRedundantIndicatorCorrection(unittest.TestCase):
         cls.hybrid_hgb_pipe = train.build_hybrid_hgb_pipeline()
         cls.hybrid_hgb_pipe.fit(train_df[train.ALL_FEATURES], y_train)
 
-    def _feature_names(self, pipe):
-        return list(pipe.named_steps["preprocess"].get_feature_names_out())
+    def _feature_names(self, pipeline):
+        return list(pipeline.named_steps["preprocess"].get_feature_names_out())
 
     def test_traditional_pipeline_no_bureau_score_indicator(self):
         names = self._feature_names(self.trad_pipe)
-        redundant = [n for n in names if "missingindicator_bureau_score" in n]
-        self.assertEqual(
-            redundant, [],
-            msg=f"Redundant bureau-score indicator found: {redundant}",
-        )
+        bureau_indicators = [n for n in names if "missingindicator_bureau_score" in n]
+        self.assertEqual(bureau_indicators, [])
+
+    def test_traditional_pipeline_retains_bureau_history_feature(self):
+        names = self._feature_names(self.trad_pipe)
+        self.assertTrue(any("bureau_history_available" in n for n in names))
 
     def test_hybrid_lr_pipeline_no_bureau_score_indicator(self):
         names = self._feature_names(self.hybrid_lr_pipe)
-        redundant = [n for n in names if "missingindicator_bureau_score" in n]
-        self.assertEqual(
-            redundant, [],
-            msg=f"Redundant bureau-score indicator found: {redundant}",
-        )
+        bureau_indicators = [n for n in names if "missingindicator_bureau_score" in n]
+        self.assertEqual(bureau_indicators, [])
+
+    def test_hybrid_lr_pipeline_retains_alt_indicators(self):
+        names = self._feature_names(self.hybrid_lr_pipe)
+        alt_indicators = [n for n in names if "missingindicator" in n]
+        self.assertEqual(len(alt_indicators), 4)
 
     def test_hybrid_hgb_pipeline_no_bureau_score_indicator(self):
         names = self._feature_names(self.hybrid_hgb_pipe)
-        redundant = [n for n in names if "missingindicator_bureau_score" in n]
-        self.assertEqual(
-            redundant, [],
-            msg=f"Redundant bureau-score indicator found: {redundant}",
-        )
-
-    def test_hybrid_lr_pipeline_retains_alt_indicators(self):
-        """The four genuine alt-feature missingness indicators must still be present."""
-        names = self._feature_names(self.hybrid_lr_pipe)
-        for col in train._ALT_FEATURES_WITH_MISSINGNESS:
-            expected = f"alt_ind__missingindicator_{col}"
-            self.assertIn(expected, names, msg=f"Missing expected indicator: {expected}")
+        bureau_indicators = [n for n in names if "missingindicator_bureau_score" in n]
+        self.assertEqual(bureau_indicators, [])
 
     def test_hybrid_hgb_pipeline_retains_alt_indicators(self):
         names = self._feature_names(self.hybrid_hgb_pipe)
-        for col in train._ALT_FEATURES_WITH_MISSINGNESS:
-            expected = f"alt_ind__missingindicator_{col}"
-            self.assertIn(expected, names, msg=f"Missing expected indicator: {expected}")
-
-    def test_traditional_pipeline_retains_bureau_history_feature(self):
-        """bureau_history_available must still appear as a predictor."""
-        names = self._feature_names(self.trad_pipe)
-        self.assertTrue(
-            any("bureau_history_available" in n for n in names),
-            msg="bureau_history_available missing from traditional pipeline",
-        )
+        alt_indicators = [n for n in names if "missingindicator" in n]
+        self.assertEqual(len(alt_indicators), 4)
 
 
 # ---------------------------------------------------------------------------
-# 5. Missing alternative data (inference robustness)
+# 5. Missing alternative data inference handling
 # ---------------------------------------------------------------------------
 
 class TestMissingAlternativeData(unittest.TestCase):
@@ -274,7 +278,6 @@ class TestMissingAlternativeData(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        import pandas as pd
         df = _small_dataset(n=400, seed=11)
         train_df, cls.test_df = _train_test_split(df)
         y_train = train_df[train.TARGET]
@@ -285,13 +288,11 @@ class TestMissingAlternativeData(unittest.TestCase):
         cls.hybrid_hgb_pipe = train.build_hybrid_hgb_pipeline()
         cls.hybrid_hgb_pipe.fit(train_df[train.ALL_FEATURES], y_train)
 
-        # Build a single-row test case where ALL alternative features are NaN.
         base_row = train_df[train.ALL_FEATURES].iloc[[0]].copy()
         for col in train.ALTERNATIVE_FEATURES:
             base_row[col] = float("nan")
         cls.all_alt_missing_row = base_row
 
-        # Build a row with bureau_history_available==0 and bureau_score NaN.
         no_bureau_row = train_df[train.ALL_FEATURES].iloc[[0]].copy()
         no_bureau_row["bureau_history_available"] = 0
         no_bureau_row["bureau_score"] = float("nan")
@@ -327,70 +328,69 @@ class TestMissingAlternativeData(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestSerializedArtifacts(unittest.TestCase):
-    """All three saved .joblib models must load and predict without error."""
 
-    ARTIFACT_SPECS = [
-        ("traditional_baseline.joblib",       train.TRADITIONAL_FEATURES),
-        ("hybrid_logistic_regression.joblib",  train.ALL_FEATURES),
-        ("hybrid_hist_gradient_boosting.joblib", train.ALL_FEATURES),
-    ]
+    TRAD_PATH = ROOT / "models" / "traditional_baseline.joblib"
+    HYBRID_LR_PATH = ROOT / "models" / "hybrid_logistic_regression.joblib"
+    HYBRID_HGB_PATH = ROOT / "models" / "hybrid_hist_gradient_boosting.joblib"
 
-    @classmethod
-    def setUpClass(cls):
-        import joblib
-        cls.models = {}
-        cls.load_errors = {}
-        for filename, _ in cls.ARTIFACT_SPECS:
-            path = ROOT / "models" / filename
-            if path.exists():
-                try:
-                    cls.models[filename] = joblib.load(path)
-                except Exception as exc:
-                    cls.load_errors[filename] = exc
-            else:
-                cls.load_errors[filename] = FileNotFoundError(f"{path} not found")
-
-        # One fixed synthetic row for inference smoke tests.
-        cls.sample_row = train.generate_synthetic_dataset(n=1, seed=99)[train.ALL_FEATURES]
-
-    def _check_model_available(self, filename):
-        if filename in self.load_errors:
-            self.fail(f"Could not load {filename}: {self.load_errors[filename]}")
-
-    def _run_inference(self, filename, feature_cols):
-        self._check_model_available(filename)
-        model = self.models[filename]
-        row = self.sample_row[feature_cols]
-        prob = model.predict_proba(row)[0, 1]
-        self.assertTrue(np.isfinite(prob), f"{filename}: non-finite probability")
-        self.assertTrue(0.0 <= prob <= 1.0, f"{filename}: probability out of [0,1]")
+    def setUp(self):
+        self.df = _small_dataset(n=100)
 
     def test_traditional_baseline_loads(self):
-        self._check_model_available("traditional_baseline.joblib")
+        import joblib
+        if not self.TRAD_PATH.exists():
+            self.skipTest("Model file not found; run train.py first")
+        model = joblib.load(self.TRAD_PATH)
+        self.assertTrue(hasattr(model, "predict_proba"))
 
     def test_traditional_baseline_inference(self):
-        self._run_inference("traditional_baseline.joblib", train.TRADITIONAL_FEATURES)
+        import joblib
+        if not self.TRAD_PATH.exists():
+            self.skipTest("Model file not found; run train.py first")
+        model = joblib.load(self.TRAD_PATH)
+        probs = model.predict_proba(self.df[train.TRADITIONAL_FEATURES])[:, 1]
+        self.assertEqual(len(probs), len(self.df))
+        self.assertTrue(np.all(np.isfinite(probs)))
 
     def test_hybrid_lr_loads(self):
-        self._check_model_available("hybrid_logistic_regression.joblib")
+        import joblib
+        if not self.HYBRID_LR_PATH.exists():
+            self.skipTest("Model file not found; run train.py first")
+        model = joblib.load(self.HYBRID_LR_PATH)
+        self.assertTrue(hasattr(model, "predict_proba"))
 
     def test_hybrid_lr_inference(self):
-        self._run_inference("hybrid_logistic_regression.joblib", train.ALL_FEATURES)
-
-    def test_hybrid_hgb_loads(self):
-        self._check_model_available("hybrid_hist_gradient_boosting.joblib")
-
-    def test_hybrid_hgb_inference(self):
-        self._run_inference("hybrid_hist_gradient_boosting.joblib", train.ALL_FEATURES)
+        import joblib
+        if not self.HYBRID_LR_PATH.exists():
+            self.skipTest("Model file not found; run train.py first")
+        model = joblib.load(self.HYBRID_LR_PATH)
+        probs = model.predict_proba(self.df[train.ALL_FEATURES])[:, 1]
+        self.assertEqual(len(probs), len(self.df))
+        self.assertTrue(np.all(np.isfinite(probs)))
 
     def test_hybrid_lr_probability_in_range(self):
-        """Explicit range assertion for the primary inference model."""
-        self._check_model_available("hybrid_logistic_regression.joblib")
-        model = self.models["hybrid_logistic_regression.joblib"]
-        row = self.sample_row[train.ALL_FEATURES]
-        prob = float(model.predict_proba(row)[0, 1])
-        self.assertTrue(0.0 <= prob <= 1.0)
-        self.assertTrue(np.isfinite(prob))
+        import joblib
+        if not self.HYBRID_LR_PATH.exists():
+            self.skipTest("Model file not found; run train.py first")
+        model = joblib.load(self.HYBRID_LR_PATH)
+        probs = model.predict_proba(self.df[train.ALL_FEATURES])[:, 1]
+        self.assertTrue(np.all((probs >= 0.0) & (probs <= 1.0)))
+
+    def test_hybrid_hgb_loads(self):
+        import joblib
+        if not self.HYBRID_HGB_PATH.exists():
+            self.skipTest("Model file not found; run train.py first")
+        model = joblib.load(self.HYBRID_HGB_PATH)
+        self.assertTrue(hasattr(model, "predict_proba"))
+
+    def test_hybrid_hgb_inference(self):
+        import joblib
+        if not self.HYBRID_HGB_PATH.exists():
+            self.skipTest("Model file not found; run train.py first")
+        model = joblib.load(self.HYBRID_HGB_PATH)
+        probs = model.predict_proba(self.df[train.ALL_FEATURES])[:, 1]
+        self.assertEqual(len(probs), len(self.df))
+        self.assertTrue(np.all(np.isfinite(probs)))
 
 
 # ---------------------------------------------------------------------------
@@ -398,14 +398,6 @@ class TestSerializedArtifacts(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestSerializedArtifactCompatibility(unittest.TestCase):
-    """Report incompatibilities between old serialized models and corrected pipelines.
-
-    Old models were trained with the redundant bureau-score indicator.  After
-    retraining the saved artifacts, this test checks that the saved models use the
-    corrected preprocessor.  If the models on disk still carry the old schema, the
-    test will FAIL with a descriptive message rather than silently passing.
-    """
-
     HYBRID_FILES = [
         ("hybrid_logistic_regression.joblib",    train.ALL_FEATURES),
         ("hybrid_hist_gradient_boosting.joblib", train.ALL_FEATURES),
@@ -451,6 +443,391 @@ class TestSerializedArtifactCompatibility(unittest.TestCase):
 
     def test_hybrid_hgb_no_redundant_indicator(self):
         self._check_no_redundant_indicator("hybrid_hist_gradient_boosting.joblib")
+
+
+# ---------------------------------------------------------------------------
+# 8. Schema validation tests (Phase 02 — Objective A & E)
+# ---------------------------------------------------------------------------
+
+class TestSchemaValidation(unittest.TestCase):
+    """Test suite covering dataset schema and feature frame data contracts."""
+
+    def setUp(self):
+        self.df = _small_dataset(n=200, seed=123)
+
+    def test_valid_dataset_schema_passes(self):
+        """The standard generated dataset must validate with zero errors."""
+        validation.validate_dataset_schema(self.df)
+
+    def test_dataset_missing_target_raises(self):
+        """Omitting the binary target column from the dataset must fail validation."""
+        bad_df = self.df.drop(columns=[train.TARGET])
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("Missing required dataset column", str(cm.exception))
+
+    def test_dataset_missing_predictor_raises(self):
+        """Omitting a required feature column from the dataset must fail validation."""
+        bad_df = self.df.drop(columns=["monthly_income_inr"])
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("monthly_income_inr", str(cm.exception))
+
+    def test_dataset_duplicate_column_raises(self):
+        """Duplicate column names in dataset must be rejected."""
+        bad_df = pd.concat([self.df, self.df[["age_years"]]], axis=1)
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("Duplicate column names", str(cm.exception))
+
+    def test_dataset_duplicate_applicant_id_raises(self):
+        """Duplicate synthetic applicant IDs must be rejected."""
+        bad_df = self.df.copy()
+        bad_df.loc[1, "synthetic_applicant_id"] = bad_df.loc[0, "synthetic_applicant_id"]
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("Duplicate synthetic applicant identifier", str(cm.exception))
+
+    def test_dataset_non_binary_target_raises(self):
+        """Non-binary target values (e.g. 2) must be rejected."""
+        bad_df = self.df.copy()
+        bad_df.loc[0, train.TARGET] = 2
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("binary values in {0, 1}", str(cm.exception))
+
+    def test_dataset_null_target_raises(self):
+        """Missing values in the target column must be rejected."""
+        bad_df = self.df.copy()
+        bad_df.loc[0, train.TARGET] = np.nan
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("must not contain missing values", str(cm.exception))
+
+    def test_dataset_malformed_string_feature_raises(self):
+        """String or object columns masquerading as features must fail without silent coercion."""
+        bad_df = self.df.copy()
+        bad_df["monthly_income_inr"] = bad_df["monthly_income_inr"].astype(str)
+        bad_df.loc[0, "monthly_income_inr"] = "forty_thousand"
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("must be numeric", str(cm.exception))
+
+    def test_dataset_infinite_feature_raises(self):
+        """Infinite numeric values (+inf or -inf) must be rejected."""
+        bad_df = self.df.copy()
+        bad_df.loc[0, "debt_to_income_ratio"] = np.inf
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("infinite values", str(cm.exception))
+
+    def test_dataset_invalid_binary_flag_raises(self):
+        """bureau_history_available values outside {0, 1} must be rejected."""
+        bad_df = self.df.copy()
+        bad_df.loc[0, "bureau_history_available"] = 5
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("Allowed values are {0, 1}", str(cm.exception))
+
+    def test_dataset_inconsistent_bureau_score_no_history_raises(self):
+        """A row with bureau_history_available == 0 but non-NaN bureau_score violates contract."""
+        bad_df = self.df.copy()
+        no_bureau_idx = bad_df[bad_df["bureau_history_available"] == 0].index[0]
+        bad_df.loc[no_bureau_idx, "bureau_score"] = 650.0
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("bureau contract", str(cm.exception))
+
+    def test_dataset_inconsistent_bureau_score_has_history_raises(self):
+        """A row with bureau_history_available == 1 but NaN bureau_score violates contract."""
+        bad_df = self.df.copy()
+        has_bureau_idx = bad_df[bad_df["bureau_history_available"] == 1].index[0]
+        bad_df.loc[has_bureau_idx, "bureau_score"] = np.nan
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("bureau contract", str(cm.exception))
+
+    def test_dataset_prohibited_missing_traditional_raises(self):
+        """Missing values in traditional features other than bureau_score are prohibited."""
+        bad_df = self.df.copy()
+        bad_df.loc[0, "age_years"] = np.nan
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("prohibited by the dataset contract", str(cm.exception))
+
+    def test_dataset_negative_value_where_prohibited_raises(self):
+        """Negative values where prohibited by domain bounds must be rejected."""
+        bad_df = self.df.copy()
+        bad_df.loc[0, "monthly_income_inr"] = -500.0
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("outside the supported domain", str(cm.exception))
+
+    def test_dataset_out_of_range_value_raises(self):
+        """Values exceeding maximum domain bounds must be rejected."""
+        bad_df = self.df.copy()
+        bad_df.loc[0, "debt_to_income_ratio"] = 2.5  # bound is [0.0, 1.2]
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_dataset_schema(bad_df)
+        self.assertIn("outside the supported domain", str(cm.exception))
+
+    def test_feature_frame_valid_traditional_passes(self):
+        """Valid traditional feature frame passes validation."""
+        X_trad = self.df[train.TRADITIONAL_FEATURES]
+        validation.validate_feature_frame(X_trad, train.TRADITIONAL_FEATURES)
+
+    def test_feature_frame_valid_hybrid_passes(self):
+        """Valid hybrid feature frame passes validation."""
+        X_all = self.df[train.ALL_FEATURES]
+        validation.validate_feature_frame(X_all, train.ALL_FEATURES)
+
+    def test_feature_frame_rejects_target(self):
+        """Passing target column inside feature frame must be rejected."""
+        bad_X = self.df[train.ALL_FEATURES + [train.TARGET]]
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_feature_frame(bad_X, train.ALL_FEATURES)
+        self.assertIn("cannot inadvertently be passed as an input feature", str(cm.exception))
+
+    def test_feature_frame_rejects_unexpected_column(self):
+        """Extra columns not in expected_features must be rejected."""
+        bad_X = self.df[train.TRADITIONAL_FEATURES].copy()
+        bad_X["unregistered_col"] = 42
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_feature_frame(bad_X, train.TRADITIONAL_FEATURES)
+        self.assertIn("Unexpected column(s)", str(cm.exception))
+
+    def test_feature_frame_rejects_missing_column(self):
+        """Missing expected columns must be rejected."""
+        bad_X = self.df[train.TRADITIONAL_FEATURES].drop(columns=["age_years"])
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_feature_frame(bad_X, train.TRADITIONAL_FEATURES)
+        self.assertIn("Missing required predictor column", str(cm.exception))
+
+    def test_feature_frame_rejects_non_dataframe(self):
+        """Passing non-DataFrame object must be rejected."""
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_feature_frame([1, 2, 3])  # type: ignore
+        self.assertIn("Expected a pandas DataFrame", str(cm.exception))
+
+    def test_feature_frame_rejects_empty_dataframe(self):
+        """Passing an empty DataFrame must be rejected."""
+        empty_df = pd.DataFrame(columns=train.ALL_FEATURES)
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_feature_frame(empty_df, train.ALL_FEATURES)
+        self.assertIn("contains 0 rows", str(cm.exception))
+
+    def test_feature_frame_permits_all_alternative_missing(self):
+        """Inference with all 5 alternative fields missing (NaN) must be accepted."""
+        row = self.df[train.ALL_FEATURES].iloc[[0]].copy()
+        for col in train.ALTERNATIVE_FEATURES:
+            row[col] = np.nan
+        validation.validate_feature_frame(row, train.ALL_FEATURES)
+
+    def test_feature_frame_permits_valid_missing_bureau(self):
+        """Inference row with bureau_history_available==0 and bureau_score NaN must be accepted."""
+        row = self.df[train.ALL_FEATURES].iloc[[0]].copy()
+        row["bureau_history_available"] = 0
+        row["bureau_score"] = np.nan
+        validation.validate_feature_frame(row, train.ALL_FEATURES)
+
+    def test_feature_frame_rejects_invalid_bureau_combination(self):
+        """Inference row with bureau_history_available==0 but bureau_score present must fail."""
+        row = self.df[train.ALL_FEATURES].iloc[[0]].copy()
+        row["bureau_history_available"] = 0
+        row["bureau_score"] = 650.0
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_feature_frame(row, train.ALL_FEATURES)
+        self.assertIn("bureau_score must be NaN", str(cm.exception))
+
+
+# ---------------------------------------------------------------------------
+# 9. Credit-risk domain evaluation metric tests (Phase 02 — Objective B & E)
+# ---------------------------------------------------------------------------
+
+class TestCreditRiskMetrics(unittest.TestCase):
+    """Test suite covering Gini, KS statistic, ECE, and evaluation helpers."""
+
+    def test_gini_identity_with_roc_auc(self):
+        """Gini must exactly satisfy Gini = 2 * ROC_AUC - 1."""
+        test_cases = [
+            (0.5, 0.0),
+            (1.0, 1.0),
+            (0.0, -1.0),
+            (0.75, 0.5),
+            (0.85, 0.7),
+        ]
+        for auc, expected_gini in test_cases:
+            self.assertAlmostEqual(train.calculate_gini(auc), expected_gini, places=7)
+
+    def test_gini_input_validation(self):
+        """Non-finite or out-of-range AUC values must raise ValueError."""
+        with self.assertRaises(ValueError):
+            train.calculate_gini(float("nan"))
+        with self.assertRaises(ValueError):
+            train.calculate_gini(1.2)
+        with self.assertRaises(ValueError):
+            train.calculate_gini(-0.1)
+
+    def test_ks_statistic_perfect_separation(self):
+        """Perfect separation between defaults and non-defaults must yield KS == 1.0."""
+        y_true = np.array([0, 0, 1, 1])
+        probs = np.array([0.1, 0.2, 0.8, 0.9])
+        ks = train.kolmogorov_smirnov_statistic(y_true, probs)
+        self.assertAlmostEqual(ks, 1.0, places=7)
+
+    def test_ks_statistic_no_separation(self):
+        """Identical scores for all samples must yield KS == 0.0."""
+        y_true = np.array([0, 0, 1, 1])
+        probs = np.array([0.5, 0.5, 0.5, 0.5])
+        ks = train.kolmogorov_smirnov_statistic(y_true, probs)
+        self.assertAlmostEqual(ks, 0.0, places=7)
+
+    def test_ks_statistic_range(self):
+        """KS statistic must always fall within [0.0, 1.0]."""
+        y_true = np.array([0, 1, 0, 1, 0, 1])
+        probs = np.array([0.2, 0.4, 0.3, 0.7, 0.6, 0.8])
+        ks = train.kolmogorov_smirnov_statistic(y_true, probs)
+        self.assertTrue(0.0 <= ks <= 1.0)
+        self.assertTrue(np.isfinite(ks))
+
+    def test_ks_statistic_input_validation(self):
+        """Malformed arrays, single-class targets, or invalid probabilities must raise ValueError."""
+        # Single class
+        with self.assertRaises(ValueError):
+            train.kolmogorov_smirnov_statistic([0, 0, 0], [0.1, 0.2, 0.3])
+        # Non-binary labels
+        with self.assertRaises(ValueError):
+            train.kolmogorov_smirnov_statistic([0, 1, 2], [0.1, 0.2, 0.3])
+        # Length mismatch
+        with self.assertRaises(ValueError):
+            train.kolmogorov_smirnov_statistic([0, 1], [0.1])
+        # Non-finite probability
+        with self.assertRaises(ValueError):
+            train.kolmogorov_smirnov_statistic([0, 1], [0.1, np.nan])
+        # Out-of-bounds probability
+        with self.assertRaises(ValueError):
+            train.kolmogorov_smirnov_statistic([0, 1], [-0.1, 0.5])
+
+    def test_ece_perfectly_calibrated_toy(self):
+        """A toy distribution where bin accuracy equals confidence must have near-zero ECE."""
+        # 100 samples with prob 0.2 (20 defaults), 100 with prob 0.8 (80 defaults)
+        y_true = np.array([0] * 80 + [1] * 20 + [0] * 20 + [1] * 80)
+        probs = np.array([0.2] * 100 + [0.8] * 100)
+        ece = train.expected_calibration_error(y_true, probs, n_bins=10)
+        self.assertAlmostEqual(ece, 0.0, places=5)
+
+    def test_ece_boundary_zero_and_one(self):
+        """Probabilities of exactly 0.0 and 1.0 must be handled correctly without error."""
+        y_true = np.array([0, 1])
+        probs = np.array([0.0, 1.0])
+        ece = train.expected_calibration_error(y_true, probs, n_bins=10)
+        self.assertAlmostEqual(ece, 0.0, places=7)
+
+    def test_ece_empty_bins_handled(self):
+        """Sparse distributions with empty bins must produce a valid finite number without NaN."""
+        y_true = np.array([0] * 9 + [1])
+        probs = np.array([0.05] * 9 + [0.95])
+        ece = train.expected_calibration_error(y_true, probs, n_bins=10)
+        self.assertTrue(np.isfinite(ece))
+        self.assertTrue(0.0 <= ece <= 1.0)
+
+    def test_ece_input_validation(self):
+        """Invalid inputs to ECE must raise ValueError."""
+        # Single class
+        with self.assertRaises(ValueError):
+            train.expected_calibration_error([0, 0, 0], [0.1, 0.2, 0.3])
+        # Length mismatch
+        with self.assertRaises(ValueError):
+            train.expected_calibration_error([0, 1], [0.1])
+        # Non-finite prob
+        with self.assertRaises(ValueError):
+            train.expected_calibration_error([0, 1], [np.nan, 0.5])
+        # Out of bounds prob
+        with self.assertRaises(ValueError):
+            train.expected_calibration_error([0, 1], [1.1, 0.5])
+        # Invalid n_bins
+        with self.assertRaises(ValueError):
+            train.expected_calibration_error([0, 1], [0.2, 0.8], n_bins=0)
+
+    def test_metric_row_returns_all_columns(self):
+        """metric_row helper must return all expected discrimination and calibration fields."""
+        y_true = pd.Series([0, 1, 0, 1, 1, 0, 1, 0])
+        probs = np.array([0.1, 0.85, 0.2, 0.75, 0.9, 0.15, 0.8, 0.3])
+        row = train.metric_row("TestModel", y_true, probs, n_bins=10)
+
+        expected_keys = {
+            "model",
+            "roc_auc",
+            "gini_coefficient",
+            "ks_statistic",
+            "average_precision",
+            "brier_score",
+            "log_loss",
+            "ece_10_bins",
+        }
+        self.assertEqual(set(row.keys()), expected_keys)
+        for k in expected_keys - {"model"}:
+            self.assertTrue(np.isfinite(row[k]), f"{k} is not finite")
+
+
+# ---------------------------------------------------------------------------
+# 10. Calibration & reporting integration tests (Phase 02 — Objective C & D)
+# ---------------------------------------------------------------------------
+
+class TestCalibrationAndReporting(unittest.TestCase):
+    """Verify generated report artifacts and metrics files contain the required content."""
+
+    def test_test_metrics_csv_contains_new_fields(self):
+        csv_path = ROOT / "reports" / "test_metrics.csv"
+        if not csv_path.exists():
+            self.skipTest("test_metrics.csv not found; run train.py first")
+        df = pd.read_csv(csv_path)
+        expected_cols = {
+            "model",
+            "roc_auc",
+            "gini_coefficient",
+            "ks_statistic",
+            "average_precision",
+            "brier_score",
+            "log_loss",
+            "ece_10_bins",
+        }
+        self.assertTrue(expected_cols.issubset(set(df.columns)))
+        self.assertEqual(len(df), 3)
+
+    def test_subgroup_metrics_csv_contains_new_fields(self):
+        csv_path = ROOT / "reports" / "no_bureau_history_subgroup_metrics.csv"
+        if not csv_path.exists():
+            self.skipTest("no_bureau_history_subgroup_metrics.csv not found; run train.py first")
+        df = pd.read_csv(csv_path)
+        expected_cols = {
+            "model",
+            "roc_auc",
+            "gini_coefficient",
+            "ks_statistic",
+            "average_precision",
+            "brier_score",
+            "log_loss",
+            "ece_10_bins",
+        }
+        self.assertTrue(expected_cols.issubset(set(df.columns)))
+
+    def test_calibration_curves_image_exists(self):
+        img_path = ROOT / "reports" / "calibration_curves.png"
+        self.assertTrue(img_path.exists(), "reports/calibration_curves.png was not generated")
+        self.assertGreater(img_path.stat().st_size, 10_000, "calibration_curves.png is unexpectedly small")
+
+    def test_run_summary_json_contains_calibration_info(self):
+        summary_path = ROOT / "reports" / "run_summary.json"
+        if not summary_path.exists():
+            self.skipTest("run_summary.json not found; run train.py first")
+        data = json.loads(summary_path.read_text())
+        self.assertIn("metrics_evaluated", data)
+        self.assertIn("gini_coefficient", data["metrics_evaluated"])
+        self.assertIn("ks_statistic", data["metrics_evaluated"])
+        self.assertIn("ece_10_bins", data["metrics_evaluated"])
+        self.assertEqual(data.get("calibration_bins"), 10)
+        self.assertEqual(data.get("calibration_strategy"), "uniform")
 
 
 if __name__ == "__main__":

@@ -9,8 +9,16 @@ Phase-01 changes (pipeline integrity):
     build_traditional_lr_pipeline()
     build_hybrid_lr_pipeline()
     build_hybrid_hgb_pipeline()
-- Corrected a redundant bureau-score missingness indicator (Objective B).  See the
+- Corrected a redundant bureau-score missingness indicator (Objective B). See the
   _make_preprocessor() docstring for the full explanation.
+
+Phase-02 changes (input validation & credit risk metrics):
+- Integrated formal dataset schema validation and feature frame checks via validation.py.
+- Added credit-risk domain evaluation metrics:
+    * Gini coefficient (Somers' D = 2 * ROC_AUC - 1).
+    * Kolmogorov-Smirnov (KS) statistic (max separation between default and non-default distributions).
+    * Expected Calibration Error (ECE) with uniform 10-bin partitioning.
+- Automated reliability diagram generation: reports/calibration_curves.png.
 """
 from __future__ import annotations
 
@@ -24,6 +32,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from sklearn.calibration import CalibrationDisplay
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.impute import SimpleImputer
@@ -34,6 +43,7 @@ from sklearn.metrics import (
     brier_score_loss,
     log_loss,
     roc_auc_score,
+    roc_curve,
     RocCurveDisplay,
     PrecisionRecallDisplay,
 )
@@ -41,33 +51,23 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from validation import (
+    ALL_FEATURES,
+    ALTERNATIVE_FEATURES,
+    DOMAIN_BOUNDS,
+    TARGET,
+    TRADITIONAL_FEATURES,
+    ValidationError,
+    validate_dataset_schema,
+    validate_feature_frame,
+)
+
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 MODEL_DIR = ROOT / "models"
 REPORT_DIR = ROOT / "reports"
 SEED = 2026
 N_SAMPLES = 10_000
-
-TRADITIONAL_FEATURES: list[str] = [
-    "age_years",
-    "monthly_income_inr",
-    "employment_tenure_years",
-    "debt_to_income_ratio",
-    "existing_loan_count",
-    "credit_utilization_ratio",
-    "prior_delinquencies_24m",
-    "bureau_history_available",
-    "bureau_score",
-]
-ALTERNATIVE_FEATURES: list[str] = [
-    "utility_payment_timeliness",
-    "rental_payment_timeliness",
-    "digital_payment_regularity",
-    "cashflow_stability_index",
-    "alternative_history_months",
-]
-TARGET = "default_within_12_months"
-ALL_FEATURES: list[str] = TRADITIONAL_FEATURES + ALTERNATIVE_FEATURES
 
 # Alternative features whose missingness is independently informative and should
 # therefore produce a binary missingness indicator during imputation.
@@ -191,7 +191,7 @@ def _make_preprocessor(
 
     A naïve ``SimpleImputer(add_indicator=True)`` applied uniformly to all features
     therefore creates a ``missingindicator_bureau_score`` column that is algebraically
-    identical to ``1 - bureau_history_available``.  Passing both to a linear model:
+    identical to ``1 - bureau_history_available``. Passing both to a linear model:
       • inflates parameter variance via exact collinearity;
       • splits the credit given to bureau availability between two perfectly correlated
         columns, making the learned coefficients and permutation importances
@@ -203,7 +203,7 @@ def _make_preprocessor(
     ========
     The preprocessor uses two separate transformer groups:
       1. ``trad`` — all traditional features (including bureau_score), imputed
-         with ``add_indicator=False``.  Missingness for bureau_score is fully
+         with ``add_indicator=False``. Missingness for bureau_score is fully
          captured by the explicit ``bureau_history_available`` column.
       2. ``alt_ind`` — the four alternative features that can be genuinely missing
          (not already covered by any other feature), imputed with
@@ -215,7 +215,6 @@ def _make_preprocessor(
     This structure preserves all legitimate missingness information while eliminating
     the redundant bureau-score indicator.
     """
-    # Identify which feature groups are present in the requested feature_cols.
     trad_cols = [c for c in TRADITIONAL_FEATURES if c in feature_cols]
     alt_ind_cols = [c for c in _ALT_FEATURES_WITH_MISSINGNESS if c in feature_cols]
     alt_no_ind_cols = [c for c in _ALT_FEATURES_NO_MISSINGNESS if c in feature_cols]
@@ -256,7 +255,7 @@ def _make_preprocessor(
 
 
 # ---------------------------------------------------------------------------
-# Pipeline builders  (Objective A — centralized, named, reusable)
+# Pipeline builders
 # ---------------------------------------------------------------------------
 
 def build_traditional_lr_pipeline() -> Pipeline:
@@ -301,16 +300,173 @@ def build_hybrid_hgb_pipeline() -> Pipeline:
 
 
 # ---------------------------------------------------------------------------
-# Evaluation helpers
+# Credit-risk domain evaluation metrics (Objective B)
 # ---------------------------------------------------------------------------
 
-def metric_row(name: str, y_true: pd.Series, probs: np.ndarray) -> dict:
+def calculate_gini(roc_auc: float) -> float:
+    """Calculate Gini coefficient (Somers' D) from ROC-AUC for binary default prediction.
+
+    Formula:
+        Gini = 2 * ROC_AUC - 1
+
+    Ranking discrimination interpretation:
+        Gini measures the degree of separation between default and non-default risk scores.
+        Gini = 1.0 indicates perfect ranking separation; Gini = 0.0 indicates no discrimination
+        beyond random ordering.
+        It is a rank discrimination metric, NOT a measure of probability calibration.
+    """
+    if not np.isfinite(roc_auc):
+        raise ValueError("ROC-AUC must be a finite number.")
+    if not (0.0 <= roc_auc <= 1.0):
+        raise ValueError(f"ROC-AUC must be in [0.0, 1.0]; got {roc_auc}.")
+    return float(2.0 * roc_auc - 1.0)
+
+
+def kolmogorov_smirnov_statistic(
+    y_true: Sequence | np.ndarray,
+    probabilities: Sequence | np.ndarray,
+) -> float:
+    """Calculate the two-sample Kolmogorov-Smirnov (KS) statistic for credit risk scoring.
+
+    In credit risk evaluation, the KS statistic measures the maximum vertical separation
+    between the cumulative default distribution (True Positive Rate) and cumulative
+    non-default distribution (False Positive Rate) across all decision thresholds:
+        KS = max_t |TPR(t) - FPR(t)|
+
+    Score orientation:
+        Probabilities represent the modeled probability of borrower default (positive class: 1).
+        Higher predicted default probability indicates higher modeled default risk.
+
+    Parameters
+    ----------
+    y_true : 1D array-like of binary targets in {0, 1}. Both classes must be present.
+    probabilities : 1D array-like of predicted default probabilities in [0.0, 1.0].
+
+    Returns
+    -------
+    ks : float in [0.0, 1.0], representing maximum separation between risk distributions.
+    """
+    y = np.asarray(y_true)
+    probs = np.asarray(probabilities, dtype=float)
+    if y.ndim != 1 or probs.ndim != 1:
+        raise ValueError("y_true and probabilities must be 1-dimensional.")
+    if len(y) != len(probs):
+        raise ValueError(f"Length mismatch: y_true ({len(y)}) vs probabilities ({len(probs)}).")
+    if len(y) < 2:
+        raise ValueError("At least 2 samples are required.")
+    if not np.all(np.isfinite(probs)):
+        raise ValueError("Probabilities must be finite numbers (no NaN or Inf).")
+    if np.any(probs < 0.0) or np.any(probs > 1.0):
+        raise ValueError("Probabilities must be bounded in [0.0, 1.0].")
+
+    unique_labels = np.unique(y)
+    if not set(unique_labels).issubset({0, 1}):
+        raise ValueError(f"Labels must be binary in {{0, 1}}; got {unique_labels}.")
+    if len(unique_labels) < 2:
+        raise ValueError("Both classes (0 and 1) must be present to evaluate KS statistic.")
+
+    fpr, tpr, _ = roc_curve(y, probs)
+    ks = float(np.max(np.abs(tpr - fpr)))
+    return ks
+
+
+def expected_calibration_error(
+    y_true: Sequence | np.ndarray,
+    probabilities: Sequence | np.ndarray,
+    n_bins: int = 10,
+) -> float:
+    """Calculate the Expected Calibration Error (ECE) using uniform probability bins.
+
+    Binning policy:
+        Uniformly partitions the probability interval [0.0, 1.0] into `n_bins` equal-width intervals.
+        Bin edges: np.linspace(0.0, 1.0, n_bins + 1).
+        Samples are assigned using numpy.searchsorted on internal edges bins[1:-1].
+        Observations with probability 1.0 fall into the final bin [1 - 1/n_bins, 1.0].
+
+    Weighting:
+        Each nonempty bin is weighted by its sample count fraction (|B_m| / N).
+        Empty bins contribute 0 to the weighted sum and avoid NaN results.
+        ECE = sum_{m: |B_m| > 0} (|B_m| / N) * |accuracy(B_m) - confidence(B_m)|
+        where accuracy(B_m) is the fraction of positive labels in bin m, and
+        confidence(B_m) is the mean predicted probability in bin m.
+
+    Calibration vs discrimination:
+        ECE measures probability reliability (calibration) and depends on the chosen bin count.
+        It is complementary to Brier score and log loss, which evaluate probability accuracy
+        without requiring binning discretization.
+
+    Parameters
+    ----------
+    y_true : 1D array-like of binary labels {0, 1}. Both classes must be present.
+    probabilities : 1D array-like of predicted default probabilities in [0.0, 1.0].
+    n_bins : int, number of uniform bins (default: 10).
+
+    Returns
+    -------
+    ece : float non-negative calibration error in [0.0, 1.0].
+    """
+    y = np.asarray(y_true)
+    probs = np.asarray(probabilities, dtype=float)
+    if y.ndim != 1 or probs.ndim != 1:
+        raise ValueError("y_true and probabilities must be 1-dimensional.")
+    if len(y) != len(probs):
+        raise ValueError(f"Length mismatch: y_true ({len(y)}) vs probabilities ({len(probs)}).")
+    if len(y) < 2:
+        raise ValueError("At least 2 samples are required.")
+    if not np.all(np.isfinite(probs)):
+        raise ValueError("Probabilities must be finite numbers (no NaN or Inf).")
+    if np.any(probs < 0.0) or np.any(probs > 1.0):
+        raise ValueError("Probabilities must be bounded in [0.0, 1.0].")
+
+    unique_labels = np.unique(y)
+    if not set(unique_labels).issubset({0, 1}):
+        raise ValueError(f"Labels must be binary in {{0, 1}}; got {unique_labels}.")
+    if len(unique_labels) < 2:
+        raise ValueError("Both classes (0 and 1) must be present to evaluate ECE.")
+    if not isinstance(n_bins, (int, np.integer)) or n_bins < 1:
+        raise ValueError(f"n_bins must be a positive integer >= 1; got {n_bins}.")
+
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    binids = np.searchsorted(bins[1:-1], probs)
+    bin_total = np.bincount(binids, minlength=n_bins)
+    bin_true = np.bincount(binids, weights=y.astype(float), minlength=n_bins)
+    bin_conf = np.bincount(binids, weights=probs, minlength=n_bins)
+
+    nonzero = bin_total > 0
+    if not np.any(nonzero):
+        return 0.0
+
+    acc = bin_true[nonzero] / bin_total[nonzero]
+    conf = bin_conf[nonzero] / bin_total[nonzero]
+    weights = bin_total[nonzero] / len(y)
+
+    ece = float(np.sum(weights * np.abs(acc - conf)))
+    return ece
+
+
+def metric_row(
+    name: str,
+    y_true: pd.Series | np.ndarray,
+    probs: np.ndarray,
+    n_bins: int = 10,
+) -> dict:
+    """Compute complete discrimination and calibration evaluation metrics for a model."""
+    auc = float(roc_auc_score(y_true, probs))
+    gini = calculate_gini(auc)
+    ks = kolmogorov_smirnov_statistic(y_true, probs)
+    ap = float(average_precision_score(y_true, probs))
+    brier = float(brier_score_loss(y_true, probs))
+    ll = float(log_loss(y_true, np.clip(probs, 1e-8, 1 - 1e-8)))
+    ece = expected_calibration_error(y_true, probs, n_bins=n_bins)
     return {
         "model": name,
-        "roc_auc": float(roc_auc_score(y_true, probs)),
-        "average_precision": float(average_precision_score(y_true, probs)),
-        "brier_score": float(brier_score_loss(y_true, probs)),
-        "log_loss": float(log_loss(y_true, np.clip(probs, 1e-8, 1 - 1e-8))),
+        "roc_auc": auc,
+        "gini_coefficient": gini,
+        "ks_statistic": ks,
+        "average_precision": ap,
+        "brier_score": brier,
+        "log_loss": ll,
+        f"ece_{n_bins}_bins": ece,
     }
 
 
@@ -339,9 +495,19 @@ def main() -> None:
         folder.mkdir(parents=True, exist_ok=True)
 
     df = generate_synthetic_dataset()
+
+    # Formal dataset schema validation (Objective A)
+    validate_dataset_schema(df)
+
     df.to_csv(DATA_DIR / "synthetic_applicants.csv", index=False)
     train_df, test_df = train_test_split(df, test_size=0.20, random_state=SEED, stratify=df[TARGET])
     y_train, y_test = train_df[TARGET], test_df[TARGET]
+
+    # Validate feature frames before training
+    validate_feature_frame(train_df[TRADITIONAL_FEATURES], TRADITIONAL_FEATURES)
+    validate_feature_frame(train_df[ALL_FEATURES], ALL_FEATURES)
+    validate_feature_frame(test_df[TRADITIONAL_FEATURES], TRADITIONAL_FEATURES)
+    validate_feature_frame(test_df[ALL_FEATURES], ALL_FEATURES)
 
     # --- Traditional Logistic Regression baseline ---
     trad_pipe = build_traditional_lr_pipeline()
@@ -391,6 +557,17 @@ def main() -> None:
         "synthetic_test_default_rate": prevalence,
         "features_traditional": TRADITIONAL_FEATURES,
         "features_alternative": ALTERNATIVE_FEATURES,
+        "metrics_evaluated": [
+            "roc_auc",
+            "gini_coefficient",
+            "ks_statistic",
+            "average_precision",
+            "brier_score",
+            "log_loss",
+            "ece_10_bins",
+        ],
+        "calibration_bins": 10,
+        "calibration_strategy": "uniform",
         "note": (
             "Metrics demonstrate an engineering pipeline on generated data only. "
             "They are not estimates of real-world borrower risk or proof of "
@@ -417,6 +594,19 @@ def main() -> None:
     plt.close(fig)
 
     plot_comparison(metrics)
+
+    # Calibration curves (reliability diagram) — Objective C
+    fig, ax = plt.subplots(figsize=(7, 5.5))
+    for name, probs in scores.items():
+        CalibrationDisplay.from_predictions(
+            y_test, probs, n_bins=10, strategy="uniform", name=name, ax=ax
+        )
+    ax.set_title("Calibration curves (reliability diagram) — synthetic test data only")
+    ax.set_xlabel("Mean predicted default probability")
+    ax.set_ylabel("Observed default frequency")
+    fig.tight_layout()
+    fig.savefig(REPORT_DIR / "calibration_curves.png", dpi=160)
+    plt.close(fig)
 
     # Test-set permutation importance for the hybrid logistic pipeline.
     # Evaluate importance on the test set for demonstration, not for tuning the model.
