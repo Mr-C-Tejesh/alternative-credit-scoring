@@ -45,6 +45,10 @@ ALT_FEATURE_OPTIONS: list[tuple[str, str]] = [
     ("alternative_history_months", "Alternative history length"),
 ]
 
+# Floating-point tolerance for validating that binary class probabilities sum to 1.0.
+# Tight tolerance accommodates float32/float64 rounding without permitting unnormalized vectors.
+PROBABILITY_SUM_TOLERANCE: float = 1e-5
+
 
 @dataclass
 class InferenceResult:
@@ -257,17 +261,43 @@ def run_inference_pipeline(
             "expected exactly (1, 2) for single-applicant binary classification."
         )
 
-    prob_val = proba_arr[0, 1]
-    if isinstance(prob_val, bool) or not isinstance(prob_val, (int, float, np.floating)):
-        raise TypeError(f"Model default probability must be numeric; got {type(prob_val).__name__}.")
+    prob_values: list[float] = []
+    class_labels = ("non-default", "default")
+    for idx, label in enumerate(class_labels):
+        val = proba_arr[0, idx]
+        if isinstance(val, (bool, np.bool_)):
+            raise TypeError(
+                f"Model {label} probability at index {idx} must be a real numeric value; got boolean {val}."
+            )
+        if isinstance(val, (complex, np.complexfloating)):
+            raise TypeError(
+                f"Model {label} probability at index {idx} must be a real numeric value; got complex {val}."
+            )
+        if not isinstance(val, (int, float, np.integer, np.floating)):
+            raise TypeError(
+                f"Model {label} probability at index {idx} must be a real numeric value; got {type(val).__name__}."
+            )
 
-    float_prob = float(prob_val)
-    if not np.isfinite(float_prob) or not (0.0 <= float_prob <= 1.0):
+        float_val = float(val)
+        if not np.isfinite(float_val):
+            raise ValueError(
+                f"Model {label} probability at index {idx} must be finite; got {float_val}."
+            )
+        if not (0.0 <= float_val <= 1.0):
+            raise ValueError(
+                f"Model {label} probability at index {idx} must lie in [0.0, 1.0]; got {float_val}."
+            )
+        prob_values.append(float_val)
+
+    p0, p1 = prob_values[0], prob_values[1]
+    prob_sum = p0 + p1
+    if abs(prob_sum - 1.0) > PROBABILITY_SUM_TOLERANCE:
         raise ValueError(
-            f"Model returned invalid default probability {float_prob}; must be a finite float in [0.0, 1.0]."
+            f"Model binary class probabilities must sum to 1.0 within tolerance {PROBABILITY_SUM_TOLERANCE}; "
+            f"got [{p0}, {p1}] summing to {prob_sum}."
         )
 
-    probability = float_prob
+    probability = p1
 
     score_result = probability_to_score(
         p=probability,

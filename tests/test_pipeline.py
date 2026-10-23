@@ -56,7 +56,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -2125,6 +2125,101 @@ class TestInferenceHardeningAndReliability(unittest.TestCase):
         with self.assertRaises(validation.ValidationError) as cm:
             inference_helper.run_inference_pipeline(mock_model, two_rows, validate=False)
         self.assertIn("exactly 1 applicant row", str(cm.exception))
+
+    def test_run_inference_pipeline_validates_complete_probability_vector(self):
+        """Inference pipeline validates both classes, non-boolean/non-complex types, finiteness, [0, 1] range, and unit sum."""
+        valid_row = self._call_build()
+
+        # 1. First class probability greater than one while second is valid: [[1.2, 0.7]]
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[1.2, 0.7]])
+        with self.assertRaises(ValueError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must lie in [0.0, 1.0]", str(cm.exception))
+
+        # 2. First class probability below zero while second is valid: [[-0.2, 0.7]]
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[-0.2, 0.7]])
+        with self.assertRaises(ValueError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must lie in [0.0, 1.0]", str(cm.exception))
+
+        # 3. NaN in the first class probability while the second is valid: [[np.nan, 0.7]]
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[np.nan, 0.7]])
+        with self.assertRaises(ValueError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must be finite", str(cm.exception))
+
+        # 4. Infinity in the first class probability while the second is valid: [[np.inf, 0.7]]
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[np.inf, 0.7]])
+        with self.assertRaises(ValueError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must be finite", str(cm.exception))
+
+        # 5. Two individually valid values that do not sum to 1.0: [[0.1, 0.6]]
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[0.1, 0.6]])
+        with self.assertRaises(ValueError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must sum to 1.0", str(cm.exception))
+
+        # Another unnormalized pair that exceeds 1.0: [[0.8, 0.8]]
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[0.8, 0.8]])
+        with self.assertRaises(ValueError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must sum to 1.0", str(cm.exception))
+
+        # 6. Boolean array rejected cleanly with TypeError
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[True, False]])
+        with self.assertRaises(TypeError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must be a real numeric value; got boolean", str(cm.exception))
+
+        # 7. Non-numeric / string array rejected cleanly with TypeError
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([["0.3", "0.7"]])
+        with self.assertRaises(TypeError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must be a real numeric value", str(cm.exception))
+
+        # 8. Complex probability array rejected cleanly with TypeError
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[0.3 + 0.1j, 0.7 - 0.1j]])
+        with self.assertRaises(TypeError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("must be a real numeric value", str(cm.exception))
+
+        # 9. Valid normalized binary pair is accepted
+        real_model = inference_helper.load_saved_model()
+        with patch.object(real_model, "predict_proba", return_value=np.array([[0.85, 0.15]])):
+            res = inference_helper.run_inference_pipeline(real_model, valid_row, validate=False)
+            self.assertEqual(res.probability, 0.15)
+            self.assertIsInstance(res.score_result, risk_scoring.ScoreResult)
+            self.assertEqual(res.risk_band, "Middle model-estimated risk")
+
+    def test_malformed_probabilities_rejected_before_score_or_explanation_calls(self):
+        """Malformed output must fail at probability validation before scoring or explanation functions run."""
+        valid_row = self._call_build()
+        malformed_vectors = [
+            np.array([[1.2, 0.7]]),
+            np.array([[-0.2, 0.7]]),
+            np.array([[np.nan, 0.7]]),
+            np.array([[0.1, 0.6]]),
+            np.array([[True, False]]),
+        ]
+        for bad_proba in malformed_vectors:
+            mock_model = MagicMock()
+            mock_model.predict_proba.return_value = bad_proba
+            with patch("inference_helper.probability_to_score") as mock_score, \
+                 patch("inference_helper.explain_logistic_prediction") as mock_explain:
+                with self.assertRaises((ValueError, TypeError)):
+                    inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+                mock_score.assert_not_called()
+                mock_explain.assert_not_called()
 
 
 if __name__ == "__main__":

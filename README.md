@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 149 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, and Streamlit `AppTest` execution:
+The test suite contains 151 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, and Streamlit `AppTest` execution:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -182,7 +182,7 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 149 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 151 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── train.py                     # Synthetic data generation and model training pipeline
