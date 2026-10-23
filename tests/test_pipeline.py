@@ -2920,6 +2920,103 @@ class TestBootstrapUncertaintyAnalysis(unittest.TestCase):
         self.assertTrue((sub_rows["n_positive"] == 259).all())
         self.assertTrue((sub_rows["n_negative"] == 667).all())
 
+    def test_dynamic_confidence_level_in_markdown_report(self):
+        """Report table headings and interval text must dynamically reflect configured confidence level."""
+        m_df, p_df, req, val = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=self.pairs,
+            n_bootstrap=20,
+            seed=2027,
+            confidence_level=0.90,
+        )
+        metadata = {
+            "dataset_source_path": "data/synthetic_applicants.csv",
+            "dataset_generation_seed": 2026,
+            "test_split_configuration": {
+                "test_size": 0.20,
+                "random_state": 2026,
+                "stratify_column": "default_within_12_months",
+                "n_test_observations": 2000,
+            },
+            "cohorts": {
+                "toy_cohort": {
+                    "definition": "Toy cohort for testing",
+                    "n_samples": self.n_samples,
+                    "n_positive": 20,
+                    "n_negative": 40,
+                    "synthetic_default_rate": 0.3333,
+                }
+            },
+            "bootstrap_configuration": {
+                "n_bootstrap_requested": 20,
+                "n_bootstrap_valid": {"toy_cohort": val},
+                "confidence_level": 0.90,
+                "seed": 2027,
+            },
+            "environment_versions": {
+                "python_version": "3.13.7",
+                "numpy_version": "2.5.4",
+                "pandas_version": "3.0.6",
+                "scikit_learn_version": "1.7.2",
+                "matplotlib_version": "3.11.2",
+            },
+        }
+        report = uncertainty_analysis.generate_markdown_report(m_df, p_df, metadata)
+
+        # Headings and descriptions must state 90%, NOT 95%
+        self.assertIn("90% CI Lower", report)
+        self.assertIn("90% CI Upper", report)
+        self.assertIn("90% two-sided percentile intervals", report)
+        self.assertIn("90% percentile interval", report)
+        self.assertNotIn("95% CI", report)
+
+    def test_atomic_replicate_failure_handling(self):
+        """Injected failure on one model must atomically discard the replicate without leaving partial data."""
+        original_compute = uncertainty_analysis.compute_model_metrics
+        call_count = 0
+
+        def flaky_compute(y_true, probabilities, n_bins=10):
+            nonlocal call_count
+            call_count += 1
+            # Calls 1 & 2 are point estimates. Call 3 & 4 are rep 1. Call 5 & 6 are rep 2.
+            # Inject a controlled ValueError on ModelB of rep 2 (call 6):
+            if call_count == 6:
+                raise ValueError("Controlled simulated failure during ModelB evaluation")
+            return original_compute(y_true, probabilities, n_bins=n_bins)
+
+        with patch("uncertainty_analysis.compute_model_metrics", side_effect=flaky_compute):
+            m_df, p_df, req, val = uncertainty_analysis.bootstrap_cohort_analysis(
+                cohort_name="toy_cohort",
+                y_true=self.y_true,
+                model_predictions=self.model_preds,
+                paired_comparisons=self.pairs,
+                n_bootstrap=10,
+                seed=2027,
+                min_valid_replicates=5,
+            )
+
+        self.assertEqual(req, 10)
+        self.assertEqual(val, 9)  # Exactly 1 replicate failed and was discarded
+        self.assertTrue((m_df["n_bootstrap_valid"] == 9).all())
+        self.assertTrue((p_df["n_bootstrap_valid"] == 9).all())
+        self.assertTrue(np.all(np.isfinite(m_df["ci_lower"])))
+        self.assertTrue(np.all(np.isfinite(m_df["ci_upper"])))
+
+    def test_unexpected_programming_error_surfaces(self):
+        """Unexpected programming exceptions (e.g., TypeError) must not be silently swallowed."""
+        with patch("uncertainty_analysis.compute_model_metrics", side_effect=TypeError("Unexpected code bug")):
+            with self.assertRaises(TypeError):
+                uncertainty_analysis.bootstrap_cohort_analysis(
+                    cohort_name="toy_cohort",
+                    y_true=self.y_true,
+                    model_predictions=self.model_preds,
+                    paired_comparisons=self.pairs,
+                    n_bootstrap=5,
+                    seed=2027,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

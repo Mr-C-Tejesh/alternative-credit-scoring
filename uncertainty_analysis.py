@@ -300,26 +300,66 @@ def bootstrap_cohort_analysis(
         if len(np.unique(y_b)) < 2:
             continue
 
+        staged_model_metrics: dict[str, dict[str, float]] = {}
+        staged_paired_deltas: dict[tuple[str, str], dict[str, float]] = {}
+
         try:
-            step_metrics: dict[str, dict[str, float]] = {}
+            # 1. Compute resampled labels and all model metrics into staged dictionary
             for model_name, p in clean_preds.items():
                 p_b = p[idx]
-                step_metrics[model_name] = compute_model_metrics(y_b, p_b, n_bins=n_bins)
+                staged_model_metrics[model_name] = compute_model_metrics(y_b, p_b, n_bins=n_bins)
 
-            # Record absolute replicate metrics
+            # 2. Compute all requested pairwise metric deltas using the same indices
+            for m_a, m_b in paired_comparisons:
+                staged_paired_deltas[(m_a, m_b)] = {}
+                for metric in metric_names:
+                    delta = staged_model_metrics[m_a][metric] - staged_model_metrics[m_b][metric]
+                    staged_paired_deltas[(m_a, m_b)][metric] = delta
+
+            # 3. Validate that staged results contain all expected finite metric values
             for model_name in clean_preds:
                 for metric in metric_names:
-                    replicate_metrics[model_name][metric].append(step_metrics[model_name][metric])
+                    val = staged_model_metrics[model_name][metric]
+                    if not np.isfinite(val):
+                        raise ValueError(f"Non-finite metric '{metric}' for model '{model_name}': {val}")
 
-            # Record paired replicate deltas (model_a minus model_b) on shared indices
-            for m_a, m_b in paired_comparisons:
+            for pair in paired_comparisons:
                 for metric in metric_names:
-                    delta = step_metrics[m_a][metric] - step_metrics[m_b][metric]
-                    replicate_deltas[(m_a, m_b)][metric].append(delta)
+                    delta_val = staged_paired_deltas[pair][metric]
+                    if not np.isfinite(delta_val):
+                        raise ValueError(f"Non-finite delta for metric '{metric}', pair {pair}: {delta_val}")
 
-            n_valid += 1
-        except Exception:
+        except (ValueError, FloatingPointError, ZeroDivisionError):
+            # Expected non-evaluable replicate failure: skip atomically without appending partial metrics
             continue
+
+        # 4. Atomic commit: append all staged metrics and deltas only after replicate is fully valid
+        for model_name in clean_preds:
+            for metric in metric_names:
+                replicate_metrics[model_name][metric].append(staged_model_metrics[model_name][metric])
+
+        for pair in paired_comparisons:
+            for metric in metric_names:
+                replicate_deltas[pair][metric].append(staged_paired_deltas[pair][metric])
+
+        n_valid += 1
+
+    # Verify transactional alignment across all metrics
+    for model_name in clean_preds:
+        for metric in metric_names:
+            if len(replicate_metrics[model_name][metric]) != n_valid:
+                raise RuntimeError(
+                    f"Replicate count mismatch for model '{model_name}', metric '{metric}': "
+                    f"{len(replicate_metrics[model_name][metric])} vs {n_valid} valid"
+                )
+
+    for pair in paired_comparisons:
+        for metric in metric_names:
+            if len(replicate_deltas[pair][metric]) != n_valid:
+                raise RuntimeError(
+                    f"Replicate count mismatch for pair {pair}, metric '{metric}': "
+                    f"{len(replicate_deltas[pair][metric])} vs {n_valid} valid"
+                )
 
     if n_valid < min_valid_replicates:
         raise ValueError(
@@ -392,7 +432,9 @@ def generate_markdown_report(
     metadata: dict,
 ) -> str:
     """Generate comprehensive audit report summarizing bootstrap uncertainty and paired comparisons."""
-    conf_pct = int(metadata["bootstrap_configuration"]["confidence_level"] * 100)
+    conf_level = float(metadata["bootstrap_configuration"]["confidence_level"])
+    conf_pct_val = conf_level * 100.0
+    conf_pct = f"{conf_pct_val:g}"
 
     lines: list[str] = [
         "# Phase 07: Bootstrap Uncertainty Quantification & Paired Model Comparison Report",
@@ -448,7 +490,7 @@ def generate_markdown_report(
     for cohort in model_df["cohort"].unique():
         lines.append(f"### Cohort: `{cohort}`")
         lines.append("")
-        lines.append("| Model | Metric | Point Estimate | 95% CI Lower | 95% CI Upper | Replicates Valid |")
+        lines.append(f"| Model | Metric | Point Estimate | {conf_pct}% CI Lower | {conf_pct}% CI Upper | Replicates Valid |")
         lines.append("|---|---|---|---|---|---|")
         sub = model_df[model_df["cohort"] == cohort]
         for _, r in sub.iterrows():
@@ -467,7 +509,7 @@ def generate_markdown_report(
         "### Metric Direction Interpretation",
         "- **Higher is better** (`roc_auc`, `gini_coefficient`, `ks_statistic`, `average_precision`): Positive $\\Delta$ favors Model A.",
         "- **Lower is better** (`brier_score`, `log_loss`, `ece_10_bins`): Negative $\\Delta$ favors Model A.",
-        "- **Interval Excludes Zero (`interval_excludes_zero`)**: Descriptive indicator that the 95% percentile interval does not contain $0.0$.",
+        f"- **Interval Excludes Zero (`interval_excludes_zero`)**: Descriptive indicator that the {conf_pct}% percentile interval does not contain $0.0$.",
         "  *(Note: This is a property of the empirical interval, not a p-value or proof of commercial/practical significance).* ",
         "",
     ])
@@ -475,9 +517,10 @@ def generate_markdown_report(
     for cohort in paired_df["cohort"].unique():
         lines.append(f"### Cohort: `{cohort}`")
         lines.append("")
-        lines.append("| Model A | Model B | Metric | Direction | Point $\\Delta$ | 95% CI Lower | 95% CI Upper | Excludes Zero? |")
+        lines.append(f"| Model A | Model B | Metric | Direction | Point $\\Delta$ | {conf_pct}% CI Lower | {conf_pct}% CI Upper | Excludes Zero? |")
         lines.append("|---|---|---|---|---|---|---|---|")
         sub = paired_df[paired_df["cohort"] == cohort]
+
         for _, r in sub.iterrows():
             excl = "Yes" if r["interval_excludes_zero"] else "No"
             lines.append(
