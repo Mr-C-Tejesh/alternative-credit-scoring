@@ -56,6 +56,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -1914,6 +1915,192 @@ class TestStreamlitIntegrationAndInferenceHelper(unittest.TestCase):
         at.multiselect[0].select("digital_payment_regularity").run()
         at.button[0].click().run()
         self.assertEqual(len(at.exception), 0, f"Exceptions on missing-alt submission: {at.exception}")
+
+
+# ---------------------------------------------------------------------------
+# Phase 05 Tests: Inference Hardening & Reliability
+# ---------------------------------------------------------------------------
+
+class TestInferenceHardeningAndReliability(unittest.TestCase):
+    """Verify hardened integer coercion, boundary validation, and inference safety."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.valid_base = {
+            "age_years": 30,
+            "monthly_income_inr": 40000.0,
+            "employment_tenure_years": 4.0,
+            "debt_to_income_ratio": 0.35,
+            "existing_loan_count": 1,
+            "credit_utilization_ratio": 0.40,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 650.0,
+            "utility_payment_timeliness": 0.82,
+            "rental_payment_timeliness": 0.80,
+            "digital_payment_regularity": 0.75,
+            "cashflow_stability_index": 0.68,
+            "alternative_history_months": 15,
+        }
+
+    def _call_build(self, **overrides):
+        args = self.valid_base.copy()
+        args.update(overrides)
+        return inference_helper.build_applicant_row(**args)
+
+    def test_fractional_integer_fields_rejected(self):
+        """Integer fields must reject fractional values without silent truncation."""
+        fractional_cases = [
+            ("age_years", 30.5),
+            ("existing_loan_count", 1.8),
+            ("prior_delinquencies_24m", 2.2),
+            ("alternative_history_months", 12.5),
+        ]
+        for field, bad_val in fractional_cases:
+            with self.subTest(field=field, bad_val=bad_val):
+                with self.assertRaises(validation.ValidationError) as cm:
+                    self._call_build(**{field: bad_val})
+                self.assertIn(f"Field '{field}'", str(cm.exception))
+                self.assertIn("must be an integer", str(cm.exception))
+
+    def test_valid_whole_number_inputs_accepted(self):
+        """Float representations of whole numbers (e.g. 1.0, 30.0) must be accepted as integers."""
+        row = self._call_build(
+            age_years=30.0,
+            existing_loan_count=2.0,
+            prior_delinquencies_24m=0.0,
+            alternative_history_months=15.0,
+        )
+        self.assertEqual(row["age_years"].iloc[0], 30)
+        self.assertEqual(row["existing_loan_count"].iloc[0], 2)
+        self.assertEqual(row["prior_delinquencies_24m"].iloc[0], 0)
+        self.assertEqual(row["alternative_history_months"].iloc[0], 15.0)
+        validation.validate_feature_frame(row, expected_features=validation.ALL_FEATURES)
+
+    def test_boolean_inputs_rejected_for_numeric_fields(self):
+        """Booleans must not be silently treated as integers or floats (e.g. True as 1)."""
+        bad_bool_cases = [
+            ("age_years", True),
+            ("monthly_income_inr", False),
+            ("existing_loan_count", True),
+            ("prior_delinquencies_24m", False),
+            ("credit_utilization_ratio", True),
+            ("alternative_history_months", True),
+        ]
+        for field, bad_val in bad_bool_cases:
+            with self.subTest(field=field, bad_val=bad_val):
+                with self.assertRaises(validation.ValidationError) as cm:
+                    self._call_build(**{field: bad_val})
+                self.assertIn(f"Field '{field}'", str(cm.exception))
+
+    def test_non_finite_required_fields_rejected(self):
+        """Required traditional fields must reject NaN, inf, and -inf."""
+        non_finite_cases = [
+            ("monthly_income_inr", np.nan),
+            ("monthly_income_inr", np.inf),
+            ("age_years", np.nan),
+            ("age_years", np.inf),
+            ("employment_tenure_years", -np.inf),
+            ("debt_to_income_ratio", np.nan),
+            ("credit_utilization_ratio", np.nan),
+            ("existing_loan_count", np.nan),
+            ("prior_delinquencies_24m", np.nan),
+            ("bureau_score", np.nan),  # when bureau_history_available=1
+        ]
+        for field, bad_val in non_finite_cases:
+            with self.subTest(field=field, bad_val=bad_val):
+                with self.assertRaises(validation.ValidationError) as cm:
+                    self._call_build(**{field: bad_val})
+                self.assertIn(f"'{field}'", str(cm.exception))
+
+    def test_invalid_unavailable_alternative_features_rejected(self):
+        """Passing unknown feature names to unavailable_alternative_features must raise ValidationError."""
+        bad_names = ["non_existent_feature", "crypto_activity"]
+        with self.assertRaises(validation.ValidationError) as cm:
+            self._call_build(unavailable_alternative_features=bad_names)
+        self.assertIn("Invalid unavailable alternative feature(s)", str(cm.exception))
+        self.assertIn("non_existent_feature", str(cm.exception))
+
+    def test_legitimate_optional_missingness_preserved_as_nan(self):
+        """Missing alternative features must remain real NaN values in the assembled row."""
+        row = self._call_build(
+            utility_payment_timeliness=None,
+            rental_payment_timeliness=np.nan,
+            unavailable_alternative_features=["digital_payment_regularity"],
+        )
+        self.assertTrue(np.isnan(row["utility_payment_timeliness"].iloc[0]))
+        self.assertTrue(np.isnan(row["rental_payment_timeliness"].iloc[0]))
+        self.assertTrue(np.isnan(row["digital_payment_regularity"].iloc[0]))
+        self.assertFalse(np.isnan(row["cashflow_stability_index"].iloc[0]))
+        validation.validate_feature_frame(row, expected_features=validation.ALL_FEATURES)
+
+    def test_unavailable_bureau_history_forces_nan_score(self):
+        """Setting bureau_history_available=0 forces bureau_score to NaN regardless of input."""
+        row_zero = self._call_build(bureau_history_available=0, bureau_score=750.0)
+        self.assertTrue(np.isnan(row_zero["bureau_score"].iloc[0]))
+        self.assertEqual(row_zero["bureau_history_available"].iloc[0], 0)
+        validation.validate_feature_frame(row_zero, expected_features=validation.ALL_FEATURES)
+
+        row_false = self._call_build(bureau_history_available=False, bureau_score=750.0)
+        self.assertTrue(np.isnan(row_false["bureau_score"].iloc[0]))
+        self.assertEqual(row_false["bureau_history_available"].iloc[0], 0)
+        validation.validate_feature_frame(row_false, expected_features=validation.ALL_FEATURES)
+
+    def test_predict_proba_not_called_on_invalid_row(self):
+        """Model predict_proba must NOT be invoked when input validation fails."""
+        mock_model = MagicMock()
+        bad_row = pd.DataFrame([{
+            "age_years": 15,  # Out of domain bounds [20, 65]
+            "monthly_income_inr": 40000.0,
+            "employment_tenure_years": 4.0,
+            "debt_to_income_ratio": 0.35,
+            "existing_loan_count": 1,
+            "credit_utilization_ratio": 0.40,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 650.0,
+            "utility_payment_timeliness": 0.82,
+            "rental_payment_timeliness": 0.80,
+            "digital_payment_regularity": 0.75,
+            "cashflow_stability_index": 0.68,
+            "alternative_history_months": 15,
+        }])
+        with self.assertRaises(validation.ValidationError):
+            inference_helper.run_inference_pipeline(mock_model, bad_row, validate=True)
+        mock_model.predict_proba.assert_not_called()
+
+    def test_run_inference_pipeline_rejects_malformed_probabilities(self):
+        """Inference pipeline must raise controlled ValueError for malformed or out-of-range probabilities."""
+        valid_row = self._call_build()
+
+        malformed_cases = [
+            ("out of range high", np.array([[0.1, 1.2]])),
+            ("out of range negative", np.array([[1.1, -0.1]])),
+            ("NaN probability", np.array([[np.nan, np.nan]])),
+            ("infinite probability", np.array([[0.0, np.inf]])),
+            ("1D array", np.array([0.5, 0.5])),
+            ("multi-row output", np.array([[0.1, 0.9], [0.2, 0.8]])),
+        ]
+        for desc, bad_proba in malformed_cases:
+            with self.subTest(case=desc):
+                mock_model = MagicMock()
+                mock_model.predict_proba.return_value = bad_proba
+                with self.assertRaises(ValueError):
+                    inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+
+    def test_run_inference_pipeline_rejects_multi_row_or_non_dataframe(self):
+        """Inference pipeline expects exactly 1 DataFrame row; rejects non-DataFrame or multi-row inputs."""
+        mock_model = MagicMock()
+        # Non-DataFrame
+        with self.assertRaises(validation.ValidationError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, {"age_years": 30}, validate=False)  # type: ignore
+        self.assertIn("pandas DataFrame", str(cm.exception))
+
+        # Multi-row DataFrame
+        two_rows = pd.concat([self._call_build(), self._call_build()], ignore_index=True)
+        with self.assertRaises(validation.ValidationError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, two_rows, validate=False)
+        self.assertIn("exactly 1 applicant row", str(cm.exception))
 
 
 if __name__ == "__main__":
