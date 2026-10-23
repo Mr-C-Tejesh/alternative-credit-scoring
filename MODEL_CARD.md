@@ -40,6 +40,13 @@ The supported bounds below reflect the generator distributions and input validat
 - Metrics evaluated: ROC-AUC, Gini coefficient, KS statistic, average precision (PR-AUC), Brier score, log loss, and Expected Calibration Error (ECE, 10 uniform bins).
 - **Out-of-Fold Threshold Analysis:** Decision threshold evaluation ($\tau \in [0.05, 0.95]$) is performed strictly on 5-fold cross-validated out-of-fold predictions on the **training partition** (8,000 samples). The held-out test partition is reserved strictly for generalization evaluation and was **not** used for threshold selection, preventing data snooping leakage.
 
+## Multi-Seed Robustness & Feature Ablation Analysis
+To assess sampling variability and marginal feature importance across independent generations, a 20-seed ablation study is documented in `experiments/alternative_feature_ablation.py` and `reports/ablation_robustness/experiment_report.md`:
+- **Seeds & Scope:** 20 independent simulation seeds (2026 to 2045), each generating 10,000 synthetic records split 80/20 train/test.
+- **Scenarios Evaluated:** Full hybrid, traditional baseline, and 5 single-feature ablations (removing utility timeliness, rental timeliness, digital regularity, cash-flow stability, or alternative history length one at a time).
+- **Leakage Prevention:** Preprocessing and model fitting are restricted strictly to each seed's training split; all 7 scenarios are evaluated on the identical held-out test split.
+- **Findings:** Utility payment timeliness and cash-flow stability exhibit the largest paired degradation across all 20 seeds. Observed lifts are expected by construction due to the synthetic generative mechanism and do not demonstrate real-world credit underwriting efficacy.
+
 ## Illustrative Score Transformation & Risk Bands
 To provide an intuitive interface familiar to credit professionals, default probabilities are mapped to a traditional 300–850 scoring scale using the industry-standard Points to Double the Odds (PDO) formulation:
 $$\text{Score} = \text{Offset} - \frac{\text{PDO}}{\ln 2} \ln\left(\frac{p}{1-p}\right)$$

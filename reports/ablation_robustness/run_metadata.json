@@ -1,0 +1,93 @@
+{
+  "experiment_name": "alternative_feature_ablation_multi_seed_study",
+  "timestamp_utc": "2026-10-23T19:24:50.932737+00:00",
+  "seeds": [
+    2026,
+    2027,
+    2028,
+    2029,
+    2030,
+    2031,
+    2032,
+    2033,
+    2034,
+    2035,
+    2036,
+    2037,
+    2038,
+    2039,
+    2040,
+    2041,
+    2042,
+    2043,
+    2044,
+    2045
+  ],
+  "n_seeds": 20,
+  "n_samples_per_seed": 10000,
+  "train_size_per_seed": 8000,
+  "test_size_per_seed": 2000,
+  "test_ratio": 0.2,
+  "scenarios": {
+    "traditional_baseline": {
+      "label": "Traditional baseline",
+      "ablated_feature": "all_alternative",
+      "feature_count": 9
+    },
+    "full_hybrid": {
+      "label": "Full hybrid",
+      "ablated_feature": "none",
+      "feature_count": 14
+    },
+    "without_utility_payment_timeliness": {
+      "label": "Hybrid without utility payment timeliness",
+      "ablated_feature": "utility_payment_timeliness",
+      "feature_count": 13
+    },
+    "without_rental_payment_timeliness": {
+      "label": "Hybrid without rental payment timeliness",
+      "ablated_feature": "rental_payment_timeliness",
+      "feature_count": 13
+    },
+    "without_digital_payment_regularity": {
+      "label": "Hybrid without digital payment regularity",
+      "ablated_feature": "digital_payment_regularity",
+      "feature_count": 13
+    },
+    "without_cashflow_stability_index": {
+      "label": "Hybrid without cash-flow stability index",
+      "ablated_feature": "cashflow_stability_index",
+      "feature_count": 13
+    },
+    "without_alternative_history_months": {
+      "label": "Hybrid without alternative history months",
+      "ablated_feature": "alternative_history_months",
+      "feature_count": 13
+    }
+  },
+  "metrics_evaluated": [
+    "roc_auc",
+    "gini_coefficient",
+    "ks_statistic",
+    "average_precision",
+    "brier_score",
+    "log_loss",
+    "ece_10_bins"
+  ],
+  "metric_directions": {
+    "roc_auc": "higher",
+    "gini_coefficient": "higher",
+    "ks_statistic": "higher",
+    "average_precision": "higher",
+    "brier_score": "lower",
+    "log_loss": "lower",
+    "ece_10_bins": "lower"
+  },
+  "subtraction_direction": "ablated_scenario_metric - full_hybrid_metric",
+  "subtraction_interpretation": {
+    "higher_is_better_metrics": "Negative delta indicates ablation degraded performance relative to full hybrid.",
+    "lower_is_better_metrics": "Positive delta indicates ablation increased error/calibration-loss relative to full hybrid."
+  },
+  "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+  "synthetic_benchmark_disclaimer": "SIMULATION BENCHMARK ONLY: Features and target default are generated artificially. The synthetic target formula in train.py explicitly incorporates alternative data. Performance changes demonstrate mathematical feature ablation properties on synthetic distributions, NOT real-world borrower creditworthiness or underwriting policy validity."
+}

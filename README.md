@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 151 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, and Streamlit `AppTest` execution:
+The test suite contains 157 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, and feature ablation experiment utilities:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -107,9 +107,52 @@ To regenerate the synthetic dataset, refit all three models, and reproduce all m
 python train.py
 ```
 
+### F. (Optional) Run the Multi-Seed Feature Ablation Study
+
+To evaluate statistical robustness across 20 independently sampled synthetic datasets (seeds 2026–2045) and measure paired performance changes from removing each alternative feature:
+
+```bash
+python experiments/alternative_feature_ablation.py
+```
+
+Deliverables are generated into `reports/ablation_robustness/`.
+
 ---
 
-## 4. Feature Groups & Supported Domain Bounds
+## 4. Multi-Seed Feature Ablation & Robustness Study
+
+To evaluate statistical stability beyond a single dataset, a reproducible 20-seed ablation study is provided in `experiments/alternative_feature_ablation.py`:
+
+- **Research Questions:**
+  1. *Seed-to-Seed Variability:* How much do discrimination and calibration metrics fluctuate across independently generated synthetic datasets?
+  2. *Controlled Feature Ablation:* What is the marginal performance degradation when removing one alternative feature at a time?
+  3. *Ranking Stability:* Are relative feature importance hierarchies consistent across random seeds?
+- **Protocol & Leakage Controls:**
+  - Evaluates 20 simulation seeds (`2026` to `2045`), each generating 10,000 independent synthetic records.
+  - Stratified 80/20 train/test split per seed (8,000 train / 2,000 test).
+  - Preprocessing (median imputation, missingness indicators, and standard scaling) is fitted strictly on the training partition for each seed (zero test data snooping).
+  - 7 paired model scenarios evaluated on identical test rows per seed: Full hybrid, 5 single-feature ablations, and the Traditional baseline.
+- **Interpreting Paired Deltas:**
+  - Subtraction direction: $\Delta \text{Metric} = \text{Metric}_{\text{ablated}} - \text{Metric}_{\text{full\_hybrid}}$.
+  - For higher-is-better metrics (ROC-AUC, Gini, KS, PR-AUC): $\Delta < 0$ reflects performance degradation when the feature is omitted.
+  - For lower-is-better metrics (Brier score, log loss, ECE): $\Delta > 0$ reflects calibration / error degradation when the feature is omitted.
+- **Key Findings (20 Seeds Summary):**
+  - Full hybrid mean test ROC-AUC is $0.9031 \pm 0.0068$ across the 20 seeds.
+  - Removing **utility payment timeliness** causes the largest average drop in ROC-AUC ($\Delta = -0.0177 \pm 0.0035$, 100% of seeds dropped), followed by **cash-flow stability** ($\Delta = -0.0155 \pm 0.0030$).
+  - Traditional baseline (all alternative features removed) drops ROC-AUC by an average of $-0.1132 \pm 0.0125$.
+- **Synthetic Data Disclaimer:**
+  Because the target generation formula in `train.py` explicitly incorporates alternative behavioral features, observed performance gains are **expected by construction**. These results demonstrate feature-ablation mechanics in synthetic benchmarks and **do not** prove that alternative data predicts real-world borrower creditworthiness.
+- **Deliverables (`reports/ablation_robustness/`):**
+  - `results_by_seed.csv`: Full metric results across all 20 seeds and 7 scenarios.
+  - `paired_deltas_by_seed.csv`: Paired metric deltas relative to the full hybrid model.
+  - `summary.csv`: Descriptive summary statistics (mean, std, median, min, max, q25, q75).
+  - `feature_ablation_plot.png`: 4-panel figure comparing paired delta distributions and absolute performance.
+  - `experiment_report.md`: Comprehensive audit report with methodology, tables, and governance notes.
+  - `run_metadata.json`: Machine-readable execution configuration and environment metadata.
+
+---
+
+## 5. Feature Groups & Supported Domain Bounds
 
 The operational boundaries below reflect the synthetic generator distribution and the input validation contract in `validation.py`. They are **model support bounds for this synthetic benchmark**, not universal borrower limits or statutory lending rules:
 
@@ -132,7 +175,7 @@ The operational boundaries below reflect the synthetic generator distribution an
 
 ---
 
-## 5. Model Outputs & Mathematical Methodology
+## 6. Model Outputs & Mathematical Methodology
 
 ### A. Estimated Default Probability ($p$)
 The hybrid Logistic Regression model outputs an estimated probability of default within 12 months ($p \in [0, 1]$). Because this model was trained on simulated data, $p$ reflects synthetic patterns, not true borrower risk.
@@ -160,7 +203,7 @@ $$\text{logit}(p) = \text{intercept} + \sum_{j=1}^M (\text{coef}_j \cdot x'_j)$$
 
 ---
 
-## 6. Repository Architecture
+## 7. Repository Architecture
 
 ```
 alternative-credit-scoring/
@@ -169,11 +212,15 @@ alternative-credit-scoring/
 │       └── tests.yml            # CI test runner (GitHub Actions on push/PR to main)
 ├── data/
 │   └── synthetic_applicants.csv # 10,000 generated benchmark records
+├── experiments/
+│   ├── __init__.py
+│   └── alternative_feature_ablation.py # 20-seed controlled feature ablation study
 ├── models/
 │   ├── hybrid_hist_gradient_boosting.joblib
 │   ├── hybrid_logistic_regression.joblib
 │   └── traditional_baseline.joblib
 ├── reports/
+│   ├── ablation_robustness/     # Multi-seed ablation metrics, deltas, plot, and report
 │   ├── calibration_curves.png
 │   ├── metric_comparison.png
 │   ├── permutation_importance.png
@@ -182,7 +229,7 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 151 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 157 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── train.py                     # Synthetic data generation and model training pipeline
@@ -198,7 +245,7 @@ alternative-credit-scoring/
 
 ---
 
-## 7. Limitations & Governance Notice
+## 8. Limitations & Governance Notice
 
 1. **Simulation Benchmark Only:** Features and target outcomes are artificially constructed by mathematical formulas.
 2. **No Real Lending Authority:** Outputs must not be used to approve, reject, price, or rank real applicants.

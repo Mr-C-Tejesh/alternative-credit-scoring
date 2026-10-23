@@ -69,6 +69,7 @@ import joblib  # noqa: E402
 import explainability  # noqa: E402
 import risk_scoring  # noqa: E402
 import inference_helper  # noqa: E402
+import experiments.alternative_feature_ablation as ablation_exp  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -2220,6 +2221,157 @@ class TestInferenceHardeningAndReliability(unittest.TestCase):
                     inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
                 mock_score.assert_not_called()
                 mock_explain.assert_not_called()
+
+class TestAlternativeFeatureAblationExperiment(unittest.TestCase):
+    """Automated test suite for the multi-seed alternative feature ablation experiment."""
+
+    def test_scenario_definitions_exact_seven(self):
+        """Scenarios dictionary must contain exactly the seven required configurations."""
+        scenarios = ablation_exp.get_ablation_scenarios()
+        self.assertEqual(len(scenarios), 7)
+        expected_keys = {
+            "traditional_baseline",
+            "full_hybrid",
+            "without_utility_payment_timeliness",
+            "without_rental_payment_timeliness",
+            "without_digital_payment_regularity",
+            "without_cashflow_stability_index",
+            "without_alternative_history_months",
+        }
+        self.assertEqual(set(scenarios.keys()), expected_keys)
+
+    def test_scenario_feature_counts_and_ablation_exactness(self):
+        """Each ablation scenario must remove exactly one named feature and retain all others."""
+        scenarios = ablation_exp.get_ablation_scenarios()
+
+        # Traditional baseline has exactly the 9 traditional features
+        self.assertEqual(scenarios["traditional_baseline"]["features"], list(validation.TRADITIONAL_FEATURES))
+        self.assertEqual(len(scenarios["traditional_baseline"]["features"]), 9)
+
+        # Full hybrid has all 14 features
+        self.assertEqual(scenarios["full_hybrid"]["features"], list(validation.ALL_FEATURES))
+        self.assertEqual(len(scenarios["full_hybrid"]["features"]), 14)
+
+        # Ablation scenarios remove exactly 1 alternative feature
+        all_features_set = set(validation.ALL_FEATURES)
+        for sc_name, sc_info in scenarios.items():
+            if sc_name in ("traditional_baseline", "full_hybrid"):
+                continue
+            feats = sc_info["features"]
+            ablated = sc_info["ablated_feature"]
+            self.assertIn(ablated, validation.ALTERNATIVE_FEATURES)
+            self.assertEqual(len(feats), 13)
+            self.assertNotIn(ablated, feats)
+            self.assertEqual(set(feats) | {ablated}, all_features_set)
+
+    def test_single_seed_execution_and_schema_compatibility(self):
+        """Executing one small seed must produce all 7 scenarios, valid metrics, and 6 paired deltas."""
+        res_df, deltas_df = ablation_exp.run_single_seed_ablation(
+            seed=2026,
+            n_samples=250,
+            test_size=0.20,
+            n_bins=10,
+        )
+        self.assertEqual(len(res_df), 7)
+        self.assertEqual(len(deltas_df), 6)
+
+        # Check sample sizes
+        self.assertTrue((res_df["train_size"] == 200).all())
+        self.assertTrue((res_df["test_size"] == 50).all())
+
+        # Check metric ranges
+        for m in ablation_exp.METRIC_NAMES:
+            self.assertIn(m, res_df.columns)
+            self.assertTrue(np.all(np.isfinite(res_df[m])))
+
+        self.assertTrue((res_df["roc_auc"] >= 0.0).all() and (res_df["roc_auc"] <= 1.0).all())
+        self.assertTrue((res_df["gini_coefficient"] >= -1.0).all() and (res_df["gini_coefficient"] <= 1.0).all())
+        self.assertTrue((res_df["ks_statistic"] >= 0.0).all() and (res_df["ks_statistic"] <= 1.0).all())
+        self.assertTrue((res_df["average_precision"] >= 0.0).all() and (res_df["average_precision"] <= 1.0).all())
+        self.assertTrue((res_df["brier_score"] >= 0.0).all() and (res_df["brier_score"] <= 1.0).all())
+        self.assertTrue((res_df["log_loss"] >= 0.0).all())
+        self.assertTrue((res_df["ece_10_bins"] >= 0.0).all() and (res_df["ece_10_bins"] <= 1.0).all())
+
+        # Subtraction direction: ablated - full_hybrid
+        full_auc = res_df.loc[res_df["scenario"] == "full_hybrid", "roc_auc"].iloc[0]
+        for sc in deltas_df["scenario"].unique():
+            sc_auc = res_df.loc[res_df["scenario"] == sc, "roc_auc"].iloc[0]
+            expected_delta = sc_auc - full_auc
+            actual_delta = deltas_df.loc[deltas_df["scenario"] == sc, "delta_roc_auc"].iloc[0]
+            self.assertAlmostEqual(actual_delta, expected_delta, places=6)
+
+    def test_deterministic_reproducibility(self):
+        """Repeated execution with identical seed and sample count must be exactly deterministic."""
+        res_a, deltas_a = ablation_exp.run_single_seed_ablation(seed=2030, n_samples=200, test_size=0.20)
+        res_b, deltas_b = ablation_exp.run_single_seed_ablation(seed=2030, n_samples=200, test_size=0.20)
+        pd.testing.assert_frame_equal(res_a, res_b)
+        pd.testing.assert_frame_equal(deltas_a, deltas_b)
+
+    def test_summary_computation_structure_and_quantiles(self):
+        """Summary computation must compute expected quantiles and maintain monotonicity."""
+        res_df, deltas_df, summary_df = ablation_exp.run_multi_seed_ablation(
+            seeds=[2026, 2027],
+            n_samples=200,
+            test_size=0.20,
+            verbose=False,
+        )
+        self.assertEqual(len(res_df), 14)  # 2 seeds * 7 scenarios
+        self.assertEqual(len(deltas_df), 12)  # 2 seeds * 6 deltas
+
+        # 7 scenarios * 7 metrics (abs) + 6 scenarios * 7 metrics (deltas) = 91 rows
+        self.assertEqual(len(summary_df), 91)
+
+        expected_cols = {
+            "statistic_type", "scenario", "scenario_label", "ablated_feature",
+            "metric", "mean", "std", "median", "min", "max", "q25", "q75",
+            "fraction_negative", "fraction_positive", "fraction_zero",
+        }
+        self.assertTrue(expected_cols.issubset(set(summary_df.columns)))
+
+        # Quantile monotonicity: min <= q25 <= median <= q75 <= max
+        self.assertTrue((summary_df["min"] <= summary_df["q25"] + 1e-9).all())
+        self.assertTrue((summary_df["q25"] <= summary_df["median"] + 1e-9).all())
+        self.assertTrue((summary_df["median"] <= summary_df["q75"] + 1e-9).all())
+        self.assertTrue((summary_df["q75"] <= summary_df["max"] + 1e-9).all())
+
+    def test_experiment_does_not_touch_production_artifacts_or_reports(self):
+        """Experiment artifact generation must not overwrite existing models or primary reports."""
+        prod_model = ROOT / "models" / "hybrid_logistic_regression.joblib"
+        primary_report = ROOT / "reports" / "test_metrics.csv"
+
+        model_mtime_before = prod_model.stat().st_mtime
+        report_mtime_before = primary_report.stat().st_mtime
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            res_df, deltas_df, summary_df = ablation_exp.run_multi_seed_ablation(
+                seeds=[2026],
+                n_samples=150,
+                verbose=False,
+            )
+            metadata = {
+                "experiment_name": "test_isolation",
+                "n_seeds": 1,
+                "n_samples_per_seed": 150,
+            }
+            ablation_exp.save_experiment_artifacts(
+                results_df=res_df,
+                deltas_df=deltas_df,
+                summary_df=summary_df,
+                metadata=metadata,
+                output_dir=tmp_path,
+            )
+            self.assertTrue((tmp_path / "results_by_seed.csv").exists())
+            self.assertTrue((tmp_path / "paired_deltas_by_seed.csv").exists())
+            self.assertTrue((tmp_path / "summary.csv").exists())
+            self.assertTrue((tmp_path / "feature_ablation_plot.png").exists())
+            self.assertTrue((tmp_path / "experiment_report.md").exists())
+            self.assertTrue((tmp_path / "run_metadata.json").exists())
+
+        # Verify production files remain untouched
+        self.assertEqual(prod_model.stat().st_mtime, model_mtime_before)
+        self.assertEqual(primary_report.stat().st_mtime, report_mtime_before)
 
 
 if __name__ == "__main__":
