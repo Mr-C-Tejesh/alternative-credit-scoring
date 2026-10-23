@@ -232,7 +232,7 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 157 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 162 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── train.py                     # Synthetic data generation and model training pipeline

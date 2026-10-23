@@ -155,6 +155,10 @@ def classify_paired_deltas(
         {'fraction_negative': float, 'fraction_positive': float, 'fraction_negligible': float}
     """
     clean_metric = metric.replace("delta_", "") if metric.startswith("delta_") else metric
+    if not isinstance(tolerances, dict):
+        raise ValueError(
+            f"Tolerances must be a dict mapping metric names to numeric thresholds, got {type(tolerances).__name__}"
+        )
     if clean_metric not in tolerances:
         raise ValueError(
             f"Unsupported metric '{metric}' (clean: '{clean_metric}'). "
@@ -162,8 +166,22 @@ def classify_paired_deltas(
         )
 
     tol = tolerances[clean_metric]
+
+    # Validate that tol is a real numeric value, not a boolean, not None/str, and is finite and non-negative
+    if isinstance(tol, bool) or not isinstance(tol, (int, float, np.floating, np.integer)):
+        raise ValueError(
+            f"Tolerance for metric '{clean_metric}' must be a real numeric value, got {tol!r} of type {type(tol).__name__}"
+        )
+
+    if not np.isfinite(tol):
+        raise ValueError(
+            f"Tolerance for metric '{clean_metric}' must be finite, got {tol}"
+        )
+
     if tol < 0.0:
-        raise ValueError(f"Tolerance for metric '{clean_metric}' must be non-negative, got {tol}")
+        raise ValueError(
+            f"Tolerance for metric '{clean_metric}' must be non-negative, got {tol}"
+        )
 
     arr = np.asarray(deltas, dtype=float)
     if arr.size == 0:

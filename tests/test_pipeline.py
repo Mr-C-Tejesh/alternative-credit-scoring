@@ -2567,11 +2567,43 @@ class TestAlternativeFeatureAblationExperiment(unittest.TestCase):
 
     def test_invalid_or_unsupported_metric_tolerance_handling(self):
         """Unsupported metric or invalid tolerance must raise appropriate ValueError."""
+        # 1. Unsupported metric or missing tolerance mapping
         with self.assertRaises(ValueError):
             ablation_exp.classify_paired_deltas([0.01], "unsupported_metric")
 
         with self.assertRaises(ValueError):
-            ablation_exp.classify_paired_deltas([0.01], "roc_auc", tolerances={"roc_auc": -0.001})
+            ablation_exp.classify_paired_deltas([0.01], "roc_auc", tolerances={"gini_coefficient": 0.002})
+
+        with self.assertRaises(ValueError):
+            ablation_exp.classify_paired_deltas([0.01], "roc_auc", tolerances=None)  # type: ignore
+
+        # 2. Invalid tolerance values: NaN, +inf, -inf, negatives, None, strings, Booleans
+        invalid_tolerances = [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            -0.001,
+            -1.0,
+            -5,
+            None,
+            "0.001",
+            "none",
+            True,
+            False,
+        ]
+        for inv in invalid_tolerances:
+            with self.subTest(invalid_tolerance=inv):
+                with self.assertRaises(ValueError):
+                    ablation_exp.classify_paired_deltas([0.01], "roc_auc", tolerances={"roc_auc": inv})  # type: ignore
+
+        # 3. Valid non-negative zero tolerance is accepted
+        res_zero = ablation_exp.classify_paired_deltas([-0.01, 0.0, 0.01], "roc_auc", tolerances={"roc_auc": 0.0})
+        self.assertAlmostEqual(res_zero["fraction_negative"], 1 / 3)
+        self.assertAlmostEqual(res_zero["fraction_negligible"], 1 / 3)
+        self.assertAlmostEqual(res_zero["fraction_positive"], 1 / 3)
+
+        res_zero_int = ablation_exp.classify_paired_deltas([0.0], "roc_auc", tolerances={"roc_auc": 0})
+        self.assertEqual(res_zero_int["fraction_negligible"], 1.0)
 
     def test_installed_dependency_versions_in_metadata(self):
         """Metadata must dynamically record installed versions of Python, NumPy, pandas, sklearn, matplotlib."""
