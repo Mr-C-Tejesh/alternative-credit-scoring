@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 158 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, and feature ablation experiment utilities:
+The test suite contains 162 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, and feature ablation experiment utilities:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -132,10 +132,11 @@ To evaluate statistical stability beyond a single dataset, a reproducible 20-see
   - Stratified 80/20 train/test split per seed (8,000 train / 2,000 test).
   - Preprocessing (median imputation, missingness indicators, and standard scaling) is fitted strictly on the training partition for each seed (zero test data snooping).
   - 7 paired model scenarios evaluated on identical test rows per seed: Full hybrid, 5 single-feature ablations, and the Traditional baseline.
-- **Interpreting Paired Deltas:**
+- **Interpreting Paired Deltas & Practical Tolerances:**
   - Subtraction direction: $\Delta \text{Metric} = \text{Metric}_{\text{ablated}} - \text{Metric}_{\text{full\_hybrid}}$.
   - For higher-is-better metrics (ROC-AUC, Gini, KS, PR-AUC): $\Delta < 0$ reflects performance degradation when the feature is omitted.
   - For lower-is-better metrics (Brier score, log loss, ECE): $\Delta > 0$ reflects calibration / error degradation when the feature is omitted.
+  - Practical negligible thresholds (e.g., $|\Delta \text{ROC-AUC}| \le 0.001$, $|\Delta \text{Gini}| \le 0.002$) classify deltas into mutually exclusive negative, negligible, and positive categories to avoid overinterpreting floating-point noise as meaningful degradation.
 - **Key Findings & Robustness Observations (20 Seeds Summary):**
   - Full hybrid mean test ROC-AUC is $0.9031 \pm 0.0068$ across the 20 seeds.
   - Removing **utility payment timeliness** causes the single largest performance drop in 15 of 20 seeds (mean rank 1.35, $\Delta = -0.0177 \pm 0.0035$), while **cash-flow stability** is rank 1 in 5 seeds and rank 2 in 12 seeds (mean rank 1.90, $\Delta = -0.0155 \pm 0.0030$).

@@ -33,6 +33,23 @@ across **20 independent synthetic simulation datasets** (seeds 2026 through 2045
   - For higher-is-better metrics (ROC-AUC, Gini, KS, PR-AUC): $\Delta < 0$ indicates performance degradation relative to the full hybrid model.
   - For lower-is-better metrics (Brier score, log loss, ECE): $\Delta > 0$ indicates error/calibration degradation relative to the full hybrid model.
 
+### 2.1 Practical Negligible-Delta Classification Conventions
+
+To prevent minor floating-point fluctuations around zero from being misclassified as meaningful degradation, paired deltas ($\Delta \text{Metric} = \text{Metric}_{\text{ablated}} - \text{Metric}_{\text{full\_hybrid}}$) are classified into three mutually exclusive categories using explicit metric-specific absolute tolerances:
+
+| Metric | Negligible Tolerance ($\tau$) | Classification Criteria |
+| :--- | :---: | :--- |
+| `roc_auc` | 0.001 | Negative: $\Delta < -0.001$ · Negligible: $|\Delta| \le 0.001$ · Positive: $\Delta > 0.001$ |
+| `gini_coefficient` | 0.002 | Negative: $\Delta < -0.002$ · Negligible: $|\Delta| \le 0.002$ · Positive: $\Delta > 0.002$ |
+| `ks_statistic` | 0.001 | Negative: $\Delta < -0.001$ · Negligible: $|\Delta| \le 0.001$ · Positive: $\Delta > 0.001$ |
+| `average_precision` | 0.001 | Negative: $\Delta < -0.001$ · Negligible: $|\Delta| \le 0.001$ · Positive: $\Delta > 0.001$ |
+| `brier_score` | 0.001 | Negative: $\Delta < -0.001$ · Negligible: $|\Delta| \le 0.001$ · Positive: $\Delta > 0.001$ |
+| `log_loss` | 0.001 | Negative: $\Delta < -0.001$ · Negligible: $|\Delta| \le 0.001$ · Positive: $\Delta > 0.001$ |
+| `ece_10_bins` | 0.001 | Negative: $\Delta < -0.001$ · Negligible: $|\Delta| \le 0.001$ · Positive: $\Delta > 0.001$ |
+
+> [!NOTE]
+> **Reporting Convention Notice:** These thresholds are practical reporting conventions to distinguish observable performance drops from numerical noise. They are **not** formal hypothesis tests, p-values, confidence intervals, or evidence of real-world underwriting relevance.
+
 ---
 
 ## 3. Absolute Model Performance Across 20 Seeds
@@ -55,14 +72,16 @@ Descriptive summary statistics of held-out test performance across the 20 simula
 
 Marginal paired differences evaluated on the identical held-out test set for each of the 20 seeds:
 
-| Ablated Feature Scenario | Mean Δ ROC-AUC (± Std) | Median Δ ROC-AUC | Seeds Δ < 0 | Mean Δ PR-AUC | Mean Δ Brier Score |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Hybrid without alternative history months** | -0.0015 (±0.0013) | -0.0017 | 90% (18/20) | -0.0029 | +0.0009 |
-| **Hybrid without rental payment timeliness** | -0.0086 (±0.0023) | -0.0085 | 100% (20/20) | -0.0169 | +0.0048 |
-| **Hybrid without utility payment timeliness** | -0.0177 (±0.0035) | -0.0175 | 100% (20/20) | -0.0366 | +0.0100 |
-| **Hybrid without digital payment regularity** | -0.0102 (±0.0033) | -0.0116 | 100% (20/20) | -0.0206 | +0.0058 |
-| **Hybrid without cash-flow stability index** | -0.0155 (±0.0030) | -0.0160 | 100% (20/20) | -0.0280 | +0.0084 |
-| **Traditional baseline** | -0.1132 (±0.0125) | -0.1110 | 100% (20/20) | -0.2042 | +0.0490 |
+| Ablated Feature Scenario | Mean Δ ROC-AUC (± Std) | Median Δ ROC-AUC | Negative (Δ < -0.001) | Negligible (|Δ| ≤ 0.001) | Positive (Δ > 0.001) | Mean Δ PR-AUC | Mean Δ Brier Score |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Hybrid without alternative history months** | -0.0015 (±0.0013) | -0.0017 | 70% (14/20) | 20% (4/20) | 10% (2/20) | -0.0029 | +0.0009 |
+| **Hybrid without rental payment timeliness** | -0.0086 (±0.0023) | -0.0085 | 100% (20/20) | 0% (0/20) | 0% (0/20) | -0.0169 | +0.0048 |
+| **Hybrid without utility payment timeliness** | -0.0177 (±0.0035) | -0.0175 | 100% (20/20) | 0% (0/20) | 0% (0/20) | -0.0366 | +0.0100 |
+| **Hybrid without digital payment regularity** | -0.0102 (±0.0033) | -0.0116 | 100% (20/20) | 0% (0/20) | 0% (0/20) | -0.0206 | +0.0058 |
+| **Hybrid without cash-flow stability index** | -0.0155 (±0.0030) | -0.0160 | 100% (20/20) | 0% (0/20) | 0% (0/20) | -0.0280 | +0.0084 |
+| **Traditional baseline** | -0.1132 (±0.0125) | -0.1110 | 100% (20/20) | 0% (0/20) | 0% (0/20) | -0.2042 | +0.0490 |
+
+*Note: Directional categories are mutually exclusive and sum to 100% across seeds using the practical tolerance $|\Delta \text{ROC-AUC}| \le 0.001$.*
 
 ### 4.1 Feature Ranking Distribution Across Seeds (Ranks 1 to 5)
 

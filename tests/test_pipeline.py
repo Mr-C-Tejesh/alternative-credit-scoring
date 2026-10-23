@@ -2324,15 +2324,34 @@ class TestAlternativeFeatureAblationExperiment(unittest.TestCase):
         expected_cols = {
             "statistic_type", "scenario", "scenario_label", "ablated_feature",
             "metric", "mean", "std", "median", "min", "max", "q25", "q75",
-            "fraction_negative", "fraction_positive", "fraction_zero",
+            "fraction_negative", "fraction_positive", "fraction_negligible",
         }
         self.assertTrue(expected_cols.issubset(set(summary_df.columns)))
+        self.assertNotIn("fraction_zero", summary_df.columns)
 
         # Quantile monotonicity: min <= q25 <= median <= q75 <= max
         self.assertTrue((summary_df["min"] <= summary_df["q25"] + 1e-9).all())
         self.assertTrue((summary_df["q25"] <= summary_df["median"] + 1e-9).all())
         self.assertTrue((summary_df["median"] <= summary_df["q75"] + 1e-9).all())
         self.assertTrue((summary_df["q75"] <= summary_df["max"] + 1e-9).all())
+
+        # Absolute metrics must have NaN / blank direction fractions
+        abs_mask = summary_df["statistic_type"] == "absolute_metric"
+        self.assertTrue(summary_df.loc[abs_mask, "fraction_negative"].isna().all())
+        self.assertTrue(summary_df.loc[abs_mask, "fraction_positive"].isna().all())
+        self.assertTrue(summary_df.loc[abs_mask, "fraction_negligible"].isna().all())
+
+        # Paired deltas must have finite fractions summing to 1.0
+        delta_mask = summary_df["statistic_type"] == "paired_delta"
+        delta_rows = summary_df[delta_mask]
+        self.assertTrue(delta_rows["fraction_negative"].notna().all())
+        self.assertTrue(delta_rows["fraction_positive"].notna().all())
+        self.assertTrue(delta_rows["fraction_negligible"].notna().all())
+        self.assertTrue((delta_rows["fraction_negative"] >= 0.0).all() and (delta_rows["fraction_negative"] <= 1.0).all())
+        self.assertTrue((delta_rows["fraction_positive"] >= 0.0).all() and (delta_rows["fraction_positive"] <= 1.0).all())
+        self.assertTrue((delta_rows["fraction_negligible"] >= 0.0).all() and (delta_rows["fraction_negligible"] <= 1.0).all())
+        fraction_sums = delta_rows["fraction_negative"] + delta_rows["fraction_positive"] + delta_rows["fraction_negligible"]
+        np.testing.assert_allclose(fraction_sums.to_numpy(), 1.0, atol=1e-6)
 
     def test_experiment_does_not_touch_production_artifacts_or_reports(self):
         """Experiment artifact generation must not overwrite existing models or primary reports."""
@@ -2459,6 +2478,129 @@ class TestAlternativeFeatureAblationExperiment(unittest.TestCase):
         bad_df = pd.DataFrame({"seed": [1], "scenario": ["traditional_baseline"], "ablated_feature": ["all_alternative"]})
         with self.assertRaises(ValueError):
             ablation_exp.compute_feature_ranking_statistics(bad_df)
+
+    def test_paired_delta_classification_boundaries_and_exact_semantics(self):
+        """Verify exact boundary semantics and mutually exclusive 1.0 sum for paired deltas."""
+        # Using roc_auc where tolerance is exactly 0.001
+        tol = ablation_exp.PAIRED_DELTA_TOLERANCES["roc_auc"]
+        self.assertEqual(tol, 0.001)
+
+        # 1. Negative delta below negative tolerance (delta < -tol)
+        res_neg = ablation_exp.classify_paired_deltas([-0.002, -0.0010001], "roc_auc")
+        self.assertEqual(res_neg["fraction_negative"], 1.0)
+        self.assertEqual(res_neg["fraction_positive"], 0.0)
+        self.assertEqual(res_neg["fraction_negligible"], 0.0)
+
+        # 2. Positive delta above positive tolerance (delta > tol)
+        res_pos = ablation_exp.classify_paired_deltas([0.002, 0.0010001], "roc_auc")
+        self.assertEqual(res_pos["fraction_negative"], 0.0)
+        self.assertEqual(res_pos["fraction_positive"], 1.0)
+        self.assertEqual(res_pos["fraction_negligible"], 0.0)
+
+        # 3. Delta exactly at positive tolerance (delta == tol -> negligible)
+        res_exact_pos = ablation_exp.classify_paired_deltas([0.001], "roc_auc")
+        self.assertEqual(res_exact_pos["fraction_negative"], 0.0)
+        self.assertEqual(res_exact_pos["fraction_positive"], 0.0)
+        self.assertEqual(res_exact_pos["fraction_negligible"], 1.0)
+
+        # 4. Delta exactly at negative tolerance (delta == -tol -> negligible)
+        res_exact_neg = ablation_exp.classify_paired_deltas([-0.001], "roc_auc")
+        self.assertEqual(res_exact_neg["fraction_negative"], 0.0)
+        self.assertEqual(res_exact_neg["fraction_positive"], 0.0)
+        self.assertEqual(res_exact_neg["fraction_negligible"], 1.0)
+
+        # 5. Delta between boundaries, including exact zero (-tol < delta < tol)
+        res_between = ablation_exp.classify_paired_deltas([-0.0005, 0.0, 0.0005], "roc_auc")
+        self.assertEqual(res_between["fraction_negative"], 0.0)
+        self.assertEqual(res_between["fraction_positive"], 0.0)
+        self.assertEqual(res_between["fraction_negligible"], 1.0)
+
+        # 6. Combined mixed vector verifying mutual exclusivity and exact 1.0 sum
+        mixed = [-0.005, -0.001, -0.0002, 0.0, 0.0004, 0.001, 0.003]  # 7 items: 1 neg, 5 negligible, 1 pos
+        res_mixed = ablation_exp.classify_paired_deltas(mixed, "roc_auc")
+        self.assertAlmostEqual(res_mixed["fraction_negative"], 1 / 7)
+        self.assertAlmostEqual(res_mixed["fraction_negligible"], 5 / 7)
+        self.assertAlmostEqual(res_mixed["fraction_positive"], 1 / 7)
+        self.assertAlmostEqual(
+            res_mixed["fraction_negative"] + res_mixed["fraction_positive"] + res_mixed["fraction_negligible"],
+            1.0,
+            places=6,
+        )
+
+        # Empty and all-NaN handling
+        empty_res = ablation_exp.classify_paired_deltas([], "roc_auc")
+        self.assertEqual(empty_res, {"fraction_negative": 0.0, "fraction_positive": 0.0, "fraction_negligible": 0.0})
+        nan_res = ablation_exp.classify_paired_deltas([np.nan, np.inf], "roc_auc")
+        self.assertEqual(nan_res, {"fraction_negative": 0.0, "fraction_positive": 0.0, "fraction_negligible": 0.0})
+
+    def test_all_seven_configured_metrics_and_tolerances(self):
+        """Verify that all 7 configured metrics have explicit tolerances and partition correctly."""
+        expected_metrics = {
+            "roc_auc",
+            "gini_coefficient",
+            "ks_statistic",
+            "average_precision",
+            "brier_score",
+            "log_loss",
+            "ece_10_bins",
+        }
+        self.assertEqual(set(ablation_exp.PAIRED_DELTA_TOLERANCES.keys()), expected_metrics)
+        self.assertEqual(ablation_exp.PAIRED_DELTA_TOLERANCES["gini_coefficient"], 0.002)
+
+        for m in expected_metrics:
+            tol = ablation_exp.PAIRED_DELTA_TOLERANCES[m]
+            self.assertGreater(tol, 0.0)
+
+            # Test vector with: 1 strictly below, 1 at -tol, 1 at 0, 1 at +tol, 1 strictly above
+            sample_deltas = [-2 * tol, -tol, 0.0, tol, 2 * tol]
+            # Test with both base metric name and delta_ prefixed name
+            for name in (m, f"delta_{m}"):
+                res = ablation_exp.classify_paired_deltas(sample_deltas, name)
+                self.assertAlmostEqual(res["fraction_negative"], 0.20, places=6)
+                self.assertAlmostEqual(res["fraction_negligible"], 0.60, places=6)
+                self.assertAlmostEqual(res["fraction_positive"], 0.20, places=6)
+                self.assertAlmostEqual(
+                    res["fraction_negative"] + res["fraction_positive"] + res["fraction_negligible"],
+                    1.0,
+                    places=6,
+                )
+
+    def test_invalid_or_unsupported_metric_tolerance_handling(self):
+        """Unsupported metric or invalid tolerance must raise appropriate ValueError."""
+        with self.assertRaises(ValueError):
+            ablation_exp.classify_paired_deltas([0.01], "unsupported_metric")
+
+        with self.assertRaises(ValueError):
+            ablation_exp.classify_paired_deltas([0.01], "roc_auc", tolerances={"roc_auc": -0.001})
+
+    def test_installed_dependency_versions_in_metadata(self):
+        """Metadata must dynamically record installed versions of Python, NumPy, pandas, sklearn, matplotlib."""
+        versions = ablation_exp.get_installed_dependency_versions()
+        required_keys = {
+            "python_version",
+            "numpy_version",
+            "pandas_version",
+            "scikit_learn_version",
+            "matplotlib_version",
+        }
+        self.assertTrue(required_keys.issubset(set(versions.keys())))
+        for k in required_keys:
+            val = versions[k]
+            self.assertIsInstance(val, str)
+            self.assertNotEqual(val, "not_installed")
+            self.assertFalse(val.startswith("error:"))
+
+        # Also inspect committed run_metadata.json
+        meta_path = ROOT / "reports" / "ablation_robustness" / "run_metadata.json"
+        self.assertTrue(meta_path.exists())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        for k in required_keys:
+            self.assertIn(k, meta)
+            self.assertIsInstance(meta[k], str)
+
+        self.assertIn("paired_delta_tolerances", meta)
+        self.assertEqual(meta["paired_delta_tolerances"], ablation_exp.PAIRED_DELTA_TOLERANCES)
+        self.assertIn("delta_classification_policy", meta)
 
 
 if __name__ == "__main__":

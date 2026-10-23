@@ -1,6 +1,6 @@
 {
   "experiment_name": "alternative_feature_ablation_multi_seed_study",
-  "timestamp_utc": "2026-10-23T19:46:49.570235+00:00",
+  "timestamp_utc": "2026-10-23T19:58:39.269618+00:00",
   "seeds": [
     2026,
     2027,
@@ -88,7 +88,26 @@
     "higher_is_better_metrics": "Negative delta indicates ablation degraded performance relative to full hybrid.",
     "lower_is_better_metrics": "Positive delta indicates ablation increased error/calibration-loss relative to full hybrid."
   },
+  "paired_delta_tolerances": {
+    "roc_auc": 0.001,
+    "gini_coefficient": 0.002,
+    "ks_statistic": 0.001,
+    "average_precision": 0.001,
+    "brier_score": 0.001,
+    "log_loss": 0.001,
+    "ece_10_bins": 0.001
+  },
+  "delta_classification_policy": {
+    "fraction_negative": "delta < -tolerance",
+    "fraction_positive": "delta > tolerance",
+    "fraction_negligible": "abs(delta) <= tolerance",
+    "reporting_notice": "Practical reporting convention; not a formal hypothesis test, confidence interval, or proof of underwriting relevance."
+  },
   "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+  "numpy_version": "2.5.4",
+  "pandas_version": "3.0.6",
+  "scikit_learn_version": "1.7.2",
+  "matplotlib_version": "3.11.2",
   "synthetic_benchmark_disclaimer": "SIMULATION BENCHMARK ONLY: Features and target default are generated artificially. The synthetic target formula in train.py explicitly incorporates alternative data. Performance changes demonstrate mathematical feature ablation properties on synthetic distributions, NOT real-world borrower creditworthiness or underwriting policy validity.",
   "ranking_analysis": {
     "mean_hierarchy": [

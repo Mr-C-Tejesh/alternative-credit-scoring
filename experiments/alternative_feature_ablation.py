@@ -14,6 +14,7 @@ alternative data improves actual credit underwriting or borrower default predict
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import logging
 import sys
@@ -85,6 +86,115 @@ METRIC_DIRECTIONS: dict[str, str] = {
     "log_loss": "lower",
     "ece_10_bins": "lower",
 }
+
+# Metric-specific absolute delta tolerances for practical negligible-difference reporting
+PAIRED_DELTA_TOLERANCES: dict[str, float] = {
+    "roc_auc": 0.001,
+    "gini_coefficient": 0.002,
+    "ks_statistic": 0.001,
+    "average_precision": 0.001,
+    "brier_score": 0.001,
+    "log_loss": 0.001,
+    "ece_10_bins": 0.001,
+}
+
+
+def get_installed_dependency_versions() -> dict[str, str]:
+    """Retrieve runtime versions of key modeling and analysis dependencies dynamically.
+
+    Uses importlib.metadata to inspect actual package metadata rather than static strings.
+    Safely handles uninstalled or undetectable packages.
+    """
+    packages = {
+        "numpy_version": "numpy",
+        "pandas_version": "pandas",
+        "scikit_learn_version": "scikit-learn",
+        "matplotlib_version": "matplotlib",
+    }
+    versions: dict[str, str] = {
+        "python_version": sys.version,
+    }
+    for key, pkg_name in packages.items():
+        try:
+            versions[key] = importlib.metadata.version(pkg_name)
+        except importlib.metadata.PackageNotFoundError:
+            versions[key] = "not_installed"
+        except Exception as exc:  # pragma: no cover
+            versions[key] = f"error: {exc}"
+    return versions
+
+
+def classify_paired_deltas(
+    deltas: np.ndarray | Sequence[float],
+    metric: str,
+    tolerances: dict[str, float] = PAIRED_DELTA_TOLERANCES,
+) -> dict[str, float]:
+    """Classify finite paired deltas into mutually exclusive negative, positive, and negligible fractions.
+
+    Tolerances represent practical reporting conventions (e.g. |delta| <= 0.001),
+    NOT formal statistical significance tests, confidence intervals, or evidence of real-world importance.
+
+    Boundary semantics:
+      - fraction_negative: delta < -tolerance
+      - fraction_positive: delta > tolerance
+      - fraction_negligible: abs(delta) <= tolerance  (includes delta == -tolerance and delta == tolerance)
+
+    Parameters
+    ----------
+    deltas : array-like
+        Finite numeric differences (ablated - full_hybrid).
+    metric : str
+        Metric name or delta metric name (e.g., 'roc_auc' or 'delta_roc_auc').
+    tolerances : dict[str, float]
+        Mapping of base metric names to negligible delta absolute tolerances.
+
+    Returns
+    -------
+    dict[str, float]
+        Fractions summing to 1.0 for valid observations:
+        {'fraction_negative': float, 'fraction_positive': float, 'fraction_negligible': float}
+    """
+    clean_metric = metric.replace("delta_", "") if metric.startswith("delta_") else metric
+    if clean_metric not in tolerances:
+        raise ValueError(
+            f"Unsupported metric '{metric}' (clean: '{clean_metric}'). "
+            f"Supported metrics: {list(tolerances.keys())}"
+        )
+
+    tol = tolerances[clean_metric]
+    if tol < 0.0:
+        raise ValueError(f"Tolerance for metric '{clean_metric}' must be non-negative, got {tol}")
+
+    arr = np.asarray(deltas, dtype=float)
+    if arr.size == 0:
+        return {
+            "fraction_negative": 0.0,
+            "fraction_positive": 0.0,
+            "fraction_negligible": 0.0,
+        }
+
+    finite_mask = np.isfinite(arr)
+    if not np.any(finite_mask):
+        return {
+            "fraction_negative": 0.0,
+            "fraction_positive": 0.0,
+            "fraction_negligible": 0.0,
+        }
+
+    vals = arr[finite_mask]
+    n = len(vals)
+
+    neg_count = int(np.sum(vals < -tol))
+    pos_count = int(np.sum(vals > tol))
+    negligible_count = int(np.sum(np.abs(vals) <= tol))
+
+    assert neg_count + pos_count + negligible_count == n
+
+    return {
+        "fraction_negative": float(neg_count / n),
+        "fraction_positive": float(pos_count / n),
+        "fraction_negligible": float(negligible_count / n),
+    }
 
 
 def get_ablation_scenarios() -> dict[str, dict[str, Any]]:
@@ -275,8 +385,16 @@ def run_single_seed_ablation(
 def compute_robustness_summary(
     results_df: pd.DataFrame,
     deltas_df: pd.DataFrame,
+    tolerances: dict[str, float] = PAIRED_DELTA_TOLERANCES,
 ) -> pd.DataFrame:
-    """Compute cross-seed summary statistics for absolute metrics and paired deltas."""
+    """Compute cross-seed summary statistics for absolute metrics and paired deltas.
+
+    For absolute_metric rows, directional fractions (negative/positive/negligible)
+    are not meaningful and are assigned np.nan (output as blank in CSV).
+    For paired_delta rows, finite deltas are classified into mutually exclusive
+    fraction_negative (delta < -tol), fraction_positive (delta > tol), and
+    fraction_negligible (abs(delta) <= tol) using metric-specific practical tolerances.
+    """
     summary_rows: list[dict[str, Any]] = []
     scenarios = get_ablation_scenarios()
 
@@ -298,9 +416,9 @@ def compute_robustness_summary(
                 "max": float(np.max(vals)),
                 "q25": float(np.percentile(vals, 25)),
                 "q75": float(np.percentile(vals, 75)),
-                "fraction_negative": float(np.mean(vals < 0.0)),
-                "fraction_positive": float(np.mean(vals > 0.0)),
-                "fraction_zero": float(np.mean(vals == 0.0)),
+                "fraction_negative": np.nan,
+                "fraction_positive": np.nan,
+                "fraction_negligible": np.nan,
             })
 
     # 2. Summary of paired deltas relative to full hybrid
@@ -311,6 +429,7 @@ def compute_robustness_summary(
         for m in METRIC_NAMES:
             col = f"delta_{m}"
             vals = sc_deltas[col].to_numpy(dtype=float)
+            clf = classify_paired_deltas(vals, m, tolerances=tolerances)
             summary_rows.append({
                 "statistic_type": "paired_delta",
                 "scenario": sc_name,
@@ -324,9 +443,9 @@ def compute_robustness_summary(
                 "max": float(np.max(vals)),
                 "q25": float(np.percentile(vals, 25)),
                 "q75": float(np.percentile(vals, 75)),
-                "fraction_negative": float(np.mean(vals < 0.0)),
-                "fraction_positive": float(np.mean(vals > 0.0)),
-                "fraction_zero": float(np.mean(vals == 0.0)),
+                "fraction_negative": clf["fraction_negative"],
+                "fraction_positive": clf["fraction_positive"],
+                "fraction_negligible": clf["fraction_negligible"],
             })
 
     return pd.DataFrame(summary_rows)
@@ -627,6 +746,23 @@ def generate_experiment_report(
         "  - For higher-is-better metrics (ROC-AUC, Gini, KS, PR-AUC): $\\Delta < 0$ indicates performance degradation relative to the full hybrid model.",
         "  - For lower-is-better metrics (Brier score, log loss, ECE): $\\Delta > 0$ indicates error/calibration degradation relative to the full hybrid model.",
         "",
+        "### 2.1 Practical Negligible-Delta Classification Conventions",
+        "",
+        "To prevent minor floating-point fluctuations around zero from being misclassified as meaningful degradation, paired deltas ($\\Delta \\text{Metric} = \\text{Metric}_{\\text{ablated}} - \\text{Metric}_{\\text{full\\_hybrid}}$) are classified into three mutually exclusive categories using explicit metric-specific absolute tolerances:",
+        "",
+        "| Metric | Negligible Tolerance ($\\tau$) | Classification Criteria |",
+        "| :--- | :---: | :--- |",
+        "| `roc_auc` | 0.001 | Negative: $\\Delta < -0.001$ · Negligible: $|\\Delta| \\le 0.001$ · Positive: $\\Delta > 0.001$ |",
+        "| `gini_coefficient` | 0.002 | Negative: $\\Delta < -0.002$ · Negligible: $|\\Delta| \\le 0.002$ · Positive: $\\Delta > 0.002$ |",
+        "| `ks_statistic` | 0.001 | Negative: $\\Delta < -0.001$ · Negligible: $|\\Delta| \\le 0.001$ · Positive: $\\Delta > 0.001$ |",
+        "| `average_precision` | 0.001 | Negative: $\\Delta < -0.001$ · Negligible: $|\\Delta| \\le 0.001$ · Positive: $\\Delta > 0.001$ |",
+        "| `brier_score` | 0.001 | Negative: $\\Delta < -0.001$ · Negligible: $|\\Delta| \\le 0.001$ · Positive: $\\Delta > 0.001$ |",
+        "| `log_loss` | 0.001 | Negative: $\\Delta < -0.001$ · Negligible: $|\\Delta| \\le 0.001$ · Positive: $\\Delta > 0.001$ |",
+        "| `ece_10_bins` | 0.001 | Negative: $\\Delta < -0.001$ · Negligible: $|\\Delta| \\le 0.001$ · Positive: $\\Delta > 0.001$ |",
+        "",
+        "> [!NOTE]",
+        "> **Reporting Convention Notice:** These thresholds are practical reporting conventions to distinguish observable performance drops from numerical noise. They are **not** formal hypothesis tests, p-values, confidence intervals, or evidence of real-world underwriting relevance.",
+        "",
         "---",
         "",
         "## 3. Absolute Model Performance Across 20 Seeds",
@@ -656,10 +792,11 @@ def generate_experiment_report(
         "",
         "Marginal paired differences evaluated on the identical held-out test set for each of the 20 seeds:",
         "",
-        "| Ablated Feature Scenario | Mean Δ ROC-AUC (± Std) | Median Δ ROC-AUC | Seeds Δ < 0 | Mean Δ PR-AUC | Mean Δ Brier Score |",
-        "| :--- | :---: | :---: | :---: | :---: | :---: |",
+        "| Ablated Feature Scenario | Mean Δ ROC-AUC (± Std) | Median Δ ROC-AUC | Negative (Δ < -0.001) | Negligible (|Δ| ≤ 0.001) | Positive (Δ > 0.001) | Mean Δ PR-AUC | Mean Δ Brier Score |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
     ])
 
+    total_seeds = len(results_df["seed"].unique()) if "seed" in results_df.columns else 20
     for sc in sc_order:
         if sc == "full_hybrid":
             continue
@@ -667,11 +804,24 @@ def generate_experiment_report(
         d_auc_m, d_auc_s = delta_auc.loc[sc, "mean"], delta_auc.loc[sc, "std"]
         d_auc_med = delta_auc.loc[sc, "median"]
         neg_pct = delta_auc.loc[sc, "fraction_negative"] * 100.0
+        neg_cnt = int(round(delta_auc.loc[sc, "fraction_negative"] * total_seeds))
+        negl_pct = delta_auc.loc[sc, "fraction_negligible"] * 100.0
+        negl_cnt = int(round(delta_auc.loc[sc, "fraction_negligible"] * total_seeds))
+        pos_pct = delta_auc.loc[sc, "fraction_positive"] * 100.0
+        pos_cnt = int(round(delta_auc.loc[sc, "fraction_positive"] * total_seeds))
+        neg_str = f"{neg_pct:.0f}% ({neg_cnt}/{total_seeds})"
+        negl_str = f"{negl_pct:.0f}% ({negl_cnt}/{total_seeds})"
+        pos_str = f"{pos_pct:.0f}% ({pos_cnt}/{total_seeds})"
         d_ap_m = delta_ap.loc[sc, "mean"]
         d_brier_m = delta_brier.loc[sc, "mean"]
         report_lines.append(
-            f"| **{lbl}** | {d_auc_m:+.4f} (±{d_auc_s:.4f}) | {d_auc_med:+.4f} | {neg_pct:.0f}% ({int(round(neg_pct * 0.20))}/20) | {d_ap_m:+.4f} | {d_brier_m:+.4f} |"
+            f"| **{lbl}** | {d_auc_m:+.4f} (±{d_auc_s:.4f}) | {d_auc_med:+.4f} | {neg_str} | {negl_str} | {pos_str} | {d_ap_m:+.4f} | {d_brier_m:+.4f} |"
         )
+
+    report_lines.extend([
+        "",
+        "*Note: Directional categories are mutually exclusive and sum to 100% across seeds using the practical tolerance $|\\Delta \\text{ROC-AUC}| \\le 0.001$.*",
+    ])
 
     ranking_df, ranking_meta = compute_feature_ranking_statistics(deltas_df)
 
@@ -783,6 +933,20 @@ def save_experiment_artifacts(
     ranking_path = output_dir / "ranking_distribution.csv"
     ranking_df.to_csv(ranking_path, index=False)
 
+    if "paired_delta_tolerances" not in metadata:
+        metadata["paired_delta_tolerances"] = PAIRED_DELTA_TOLERANCES
+    if "delta_classification_policy" not in metadata:
+        metadata["delta_classification_policy"] = {
+            "fraction_negative": "delta < -tolerance",
+            "fraction_positive": "delta > tolerance",
+            "fraction_negligible": "abs(delta) <= tolerance",
+            "reporting_notice": "Practical reporting convention; not a formal hypothesis test, confidence interval, or proof of underwriting relevance.",
+        }
+    env_versions = get_installed_dependency_versions()
+    for k, v in env_versions.items():
+        if k not in metadata:
+            metadata[k] = v
+
     metadata["ranking_analysis"] = ranking_meta
     meta_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
@@ -843,6 +1007,7 @@ def main() -> int:
     )
 
     scenarios = get_ablation_scenarios()
+    env_versions = get_installed_dependency_versions()
     metadata: dict[str, Any] = {
         "experiment_name": "alternative_feature_ablation_multi_seed_study",
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -860,7 +1025,18 @@ def main() -> int:
             "higher_is_better_metrics": "Negative delta indicates ablation degraded performance relative to full hybrid.",
             "lower_is_better_metrics": "Positive delta indicates ablation increased error/calibration-loss relative to full hybrid.",
         },
-        "python_version": sys.version,
+        "paired_delta_tolerances": PAIRED_DELTA_TOLERANCES,
+        "delta_classification_policy": {
+            "fraction_negative": "delta < -tolerance",
+            "fraction_positive": "delta > tolerance",
+            "fraction_negligible": "abs(delta) <= tolerance",
+            "reporting_notice": "Practical reporting convention; not a formal hypothesis test, confidence interval, or proof of underwriting relevance.",
+        },
+        "python_version": env_versions["python_version"],
+        "numpy_version": env_versions["numpy_version"],
+        "pandas_version": env_versions["pandas_version"],
+        "scikit_learn_version": env_versions["scikit_learn_version"],
+        "matplotlib_version": env_versions["matplotlib_version"],
         "synthetic_benchmark_disclaimer": (
             "SIMULATION BENCHMARK ONLY: Features and target default are generated artificially. "
             "The synthetic target formula in train.py explicitly incorporates alternative data. "
