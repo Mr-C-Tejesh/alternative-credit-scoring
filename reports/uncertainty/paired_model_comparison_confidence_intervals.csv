@@ -1,0 +1,43 @@
+cohort,n_samples,model_a,model_b,metric,metric_direction,point_delta,ci_lower,ci_upper,confidence_level,method,n_bootstrap_requested,n_bootstrap_valid,bootstrap_seed,interval_excludes_zero
+overall_test_set,2000,Hybrid (traditional + alternative),Traditional baseline,roc_auc,higher,0.1026896551724138,0.0847847435594498,0.12055582033942223,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (traditional + alternative),Traditional baseline,gini_coefficient,higher,0.2053793103448276,0.1695694871188996,0.24111164067884447,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (traditional + alternative),Traditional baseline,ks_statistic,higher,0.20984326018808785,0.1612946693153051,0.24396950249234664,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (traditional + alternative),Traditional baseline,average_precision,higher,0.20260052523795724,0.16776538434405266,0.23496379419602864,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (traditional + alternative),Traditional baseline,brier_score,lower,-0.048526120219318014,-0.056457319362101535,-0.04153183988249681,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (traditional + alternative),Traditional baseline,log_loss,lower,-0.13123890845438063,-0.15233981398876262,-0.11326215135156226,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (traditional + alternative),Traditional baseline,ece_10_bins,lower,-0.010098672784198251,-0.02217080535142986,0.004844728760572349,0.95,percentile,1000,1000,2027,False
+overall_test_set,2000,Hybrid (HistGradientBoosting),Traditional baseline,roc_auc,higher,0.09922884012539179,0.08058066358166467,0.11786325184397796,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (HistGradientBoosting),Traditional baseline,gini_coefficient,higher,0.19845768025078359,0.16116132716332934,0.23572650368795592,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (HistGradientBoosting),Traditional baseline,ks_statistic,higher,0.21115987460815056,0.16001135008508807,0.2413188492357888,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (HistGradientBoosting),Traditional baseline,average_precision,higher,0.1868050471427325,0.1492308048033601,0.2213935275752064,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (HistGradientBoosting),Traditional baseline,brier_score,lower,-0.045843226667804535,-0.054330728168462725,-0.0386314652116374,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (HistGradientBoosting),Traditional baseline,log_loss,lower,-0.12245662766311305,-0.14511694641385628,-0.10212541983972935,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (HistGradientBoosting),Traditional baseline,ece_10_bins,lower,-0.00312657693961757,-0.019250003246335756,0.010052265831419887,0.95,percentile,1000,1000,2027,False
+overall_test_set,2000,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),roc_auc,higher,-0.0034608150470220034,-0.00872406292192678,0.0017356286280365378,0.95,percentile,1000,1000,2027,False
+overall_test_set,2000,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),gini_coefficient,higher,-0.006921630094044007,-0.01744812584385356,0.0034712572560730757,0.95,percentile,1000,1000,2027,False
+overall_test_set,2000,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),ks_statistic,higher,0.0013166144200627006,-0.022569531912975203,0.0231644813096738,0.95,percentile,1000,1000,2027,False
+overall_test_set,2000,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),average_precision,higher,-0.015795478095224746,-0.02766076254258904,-0.00422883331873532,0.95,percentile,1000,1000,2027,True
+overall_test_set,2000,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),brier_score,lower,0.0026828935515134794,-0.00026087044564430056,0.0056162007033708225,0.95,percentile,1000,1000,2027,False
+overall_test_set,2000,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),log_loss,lower,0.008782280791267583,-0.0003254288311269456,0.017744420059864503,0.95,percentile,1000,1000,2027,False
+overall_test_set,2000,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),ece_10_bins,lower,0.006972095844580681,-0.007400778815635239,0.01686040781530243,0.95,percentile,1000,1000,2027,False
+no_bureau_history,926,Hybrid (traditional + alternative),Traditional baseline,roc_auc,higher,0.14109740496547096,0.11279576088224996,0.17336501231292778,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (traditional + alternative),Traditional baseline,gini_coefficient,higher,0.2821948099309419,0.22559152176449992,0.34673002462585556,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (traditional + alternative),Traditional baseline,ks_statistic,higher,0.2573790324914762,0.19511027567633674,0.3240267421308092,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (traditional + alternative),Traditional baseline,average_precision,higher,0.25279976837025553,0.20055762310878436,0.3047332041846839,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (traditional + alternative),Traditional baseline,brier_score,lower,-0.06018516728855916,-0.07178036884734663,-0.04881582317409683,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (traditional + alternative),Traditional baseline,log_loss,lower,-0.16463600830168512,-0.1955945716995465,-0.13663812680976611,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (traditional + alternative),Traditional baseline,ece_10_bins,lower,-0.0017989706322895094,-0.024263334086121364,0.018829898892350695,0.95,percentile,1000,1000,2027,False
+no_bureau_history,926,Hybrid (HistGradientBoosting),Traditional baseline,roc_auc,higher,0.1318877240916222,0.10294719753930281,0.16440930652357738,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Traditional baseline,gini_coefficient,higher,0.2637754481832444,0.20589439507860563,0.32881861304715476,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Traditional baseline,ks_statistic,higher,0.2448293227903423,0.1705920518411705,0.30528814100852897,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Traditional baseline,average_precision,higher,0.22635788837660642,0.17220060787856997,0.27935857360768446,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Traditional baseline,brier_score,lower,-0.05456878112329336,-0.06712429287147516,-0.04276264838406871,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Traditional baseline,log_loss,lower,-0.14702967623867802,-0.18110208404934625,-0.11603303098901181,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Traditional baseline,ece_10_bins,lower,0.0044669987344874845,-0.024827677695209407,0.02165307670048213,0.95,percentile,1000,1000,2027,False
+no_bureau_history,926,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),roc_auc,higher,-0.009209680873848769,-0.016121043141343678,-0.0012848266169564217,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),gini_coefficient,higher,-0.018419361747697538,-0.032242086282687356,-0.0025696532339128434,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),ks_statistic,higher,-0.012549709701133893,-0.05073611598299334,0.015518541726409757,0.95,percentile,1000,1000,2027,False
+no_bureau_history,926,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),average_precision,higher,-0.02644187999364911,-0.041915158582757926,-0.010297039932051735,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),brier_score,lower,0.005616386165265802,0.0014054805316490303,0.009360155414209669,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),log_loss,lower,0.017606332063007102,0.004597030069876086,0.02876930013158275,0.95,percentile,1000,1000,2027,True
+no_bureau_history,926,Hybrid (HistGradientBoosting),Hybrid (traditional + alternative),ece_10_bins,lower,0.006265969366776994,-0.017006060141962685,0.02154363134167147,0.95,percentile,1000,1000,2027,False

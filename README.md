@@ -64,11 +64,12 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 162 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, and feature ablation experiment utilities:
+The test suite contains 172 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, and bootstrap uncertainty analysis:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
+
 
 ### C. Run the Interactive Streamlit Web App
 
@@ -117,6 +118,16 @@ python experiments/alternative_feature_ablation.py
 
 Deliverables are generated into `reports/ablation_robustness/`.
 
+### G. (Optional) Run Bootstrap Uncertainty Quantification & Paired Comparisons
+
+To quantify test-metric variability and compute paired model differences using 1,000 bootstrap replicates (seed 2027, 95% two-sided percentile intervals):
+
+```bash
+python uncertainty_analysis.py --n-bootstrap 1000 --seed 2027 --confidence-level 0.95
+```
+
+Deliverables are generated into `reports/uncertainty/`.
+
 ---
 
 ## 4. Multi-Seed Feature Ablation & Robustness Study
@@ -155,7 +166,41 @@ To evaluate statistical stability beyond a single dataset, a reproducible 20-see
 
 ---
 
-## 5. Feature Groups & Supported Domain Bounds
+## 5. Bootstrap Uncertainty Quantification & Paired Model Comparison
+
+To quantify sampling variability around the fixed fitted models without retraining, a dedicated bootstrap uncertainty module is provided in `uncertainty_analysis.py`:
+
+- **Statistical Methodology:**
+  - Evaluates the three existing serialized model pipelines (`Traditional baseline`, `Hybrid logistic regression`, `Hybrid HistGradientBoosting`) on the fixed held-out test split.
+  - Generates **1,000 bootstrap replicates** (seed `2027`) using non-parametric resampling with replacement.
+  - Reports point estimates on the complete unresampled cohort and computes **95% two-sided percentile confidence intervals** $[CI_{\text{lower}}, CI_{\text{upper}}]$.
+  - **Strict Paired Resampling:** Pairwise differences ($\Delta = \text{Metric}(M_A) - \text{Metric}(M_B)$) are computed on the **exact same resampled observation indices** for every replicate, capturing observation-level covariance rather than assuming independent samples.
+- **Cohorts Evaluated:**
+  1. `overall_test_set`: All 2,000 held-out test records (550 defaults, 27.5% default rate).
+  2. `no_bureau_history`: Held-out records where `bureau_history_available == 0` (926 records, 259 defaults, 28.0% default rate).
+- **Pairwise Comparisons Evaluated:**
+  1. *Hybrid (traditional + alternative) minus Traditional baseline:* Measures marginal gain from behavioral features.
+  2. *Hybrid (HistGradientBoosting) minus Traditional baseline:* Measures non-linear hybrid model gain over traditional baseline.
+  3. *Hybrid (HistGradientBoosting) minus Hybrid (traditional + alternative):* Measures non-linear boost versus linear hybrid model.
+- **Key Empirical Observations:**
+  - Hybrid models demonstrate clear, positive paired discrimination advantages over the traditional baseline on the overall test set (ROC-AUC $\Delta = +0.1027$, 95% CI: $[+0.0848, +0.1206]$ for Hybrid LR; $\Delta = +0.0992$, 95% CI: $[+0.0806, +0.1179]$ for Hybrid HGB; intervals exclude zero).
+  - In the `no_bureau_history` subgroup, the advantage of alternative features widens significantly (ROC-AUC $\Delta = +0.1411$, 95% CI: $[+0.1128, +0.1734]$ for Hybrid LR).
+  - Comparing the two hybrid architectures (HGB minus LR), discrimination differences are small and the paired ROC-AUC interval crosses zero ($\Delta = -0.0035$, 95% CI: $[-0.0087, +0.0017]$), indicating comparable ranking discrimination under this synthetic generation rule.
+- **Statistical Guardrails & Scope:**
+  - Percentile intervals summarize sampling variability from resampling test records for fixed, fitted model artifacts.
+  - They do **not** capture variation from retraining models on fresh training splits or variation in synthetic data generation parameters.
+  - An interval crossing zero does not establish model equivalence; an interval excluding zero does not establish business significance or real-world readiness.
+  - The `no_bureau_history` cohort is a simulation-defined subgroup; it does not represent real-world credit-invisible populations, and this analysis must not be construed as a fairness or legal compliance assessment.
+- **Deliverables (`reports/uncertainty/`):**
+  - `model_metric_confidence_intervals.csv`: Absolute metric point estimates and 95% bootstrap intervals.
+  - `paired_model_comparison_confidence_intervals.csv`: Paired metric difference point deltas, 95% intervals, and zero-exclusion indicator.
+  - `bootstrap_uncertainty_report.md`: Detailed audit report with programmatic tables and methodology notes.
+  - `run_metadata.json`: Machine-readable metadata with runtime dependency versions and configuration.
+
+
+---
+
+## 6. Feature Groups & Supported Domain Bounds
 
 The operational boundaries below reflect the synthetic generator distribution and the input validation contract in `validation.py`. They are **model support bounds for this synthetic benchmark**, not universal borrower limits or statutory lending rules:
 
@@ -178,7 +223,7 @@ The operational boundaries below reflect the synthetic generator distribution an
 
 ---
 
-## 6. Model Outputs & Mathematical Methodology
+## 7. Model Outputs & Mathematical Methodology
 
 ### A. Estimated Default Probability ($p$)
 The hybrid Logistic Regression model outputs an estimated probability of default within 12 months ($p \in [0, 1]$). Because this model was trained on simulated data, $p$ reflects synthetic patterns, not true borrower risk.
@@ -206,7 +251,7 @@ $$\text{logit}(p) = \text{intercept} + \sum_{j=1}^M (\text{coef}_j \cdot x'_j)$$
 
 ---
 
-## 7. Repository Architecture
+## 8. Repository Architecture
 
 ```
 alternative-credit-scoring/
@@ -224,6 +269,7 @@ alternative-credit-scoring/
 │   └── traditional_baseline.joblib
 ├── reports/
 │   ├── ablation_robustness/     # Multi-seed ablation metrics, deltas, plot, and report
+│   ├── uncertainty/             # Bootstrap model & paired comparison intervals, report, metadata
 │   ├── calibration_curves.png
 │   ├── metric_comparison.png
 │   ├── permutation_importance.png
@@ -232,10 +278,11 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 162 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 172 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── train.py                     # Synthetic data generation and model training pipeline
+├── uncertainty_analysis.py      # Bootstrap uncertainty quantification & paired model comparison
 ├── validation.py                # Schema contracts and domain boundary validation
 ├── risk_scoring.py              # PDO score transformation and risk band mapping
 ├── explainability.py            # Exact additive log-odds decomposition for hybrid LR
@@ -248,7 +295,7 @@ alternative-credit-scoring/
 
 ---
 
-## 8. Limitations & Governance Notice
+## 9. Limitations & Governance Notice
 
 1. **Simulation Benchmark Only:** Features and target outcomes are artificially constructed by mathematical formulas.
 2. **No Real Lending Authority:** Outputs must not be used to approve, reject, price, or rank real applicants.

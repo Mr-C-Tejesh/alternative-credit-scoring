@@ -1,0 +1,87 @@
+{
+  "experiment": "bootstrap_uncertainty_quantification_and_paired_model_comparison",
+  "dataset_type": "SIMULATED_DATA_ONLY",
+  "dataset_source_path": "data/synthetic_applicants.csv",
+  "dataset_generation_seed": 2026,
+  "test_split_configuration": {
+    "test_size": 0.2,
+    "random_state": 2026,
+    "stratify_column": "default_within_12_months",
+    "n_test_observations": 2000
+  },
+  "model_artifact_paths": {
+    "Traditional baseline": "models/traditional_baseline.joblib",
+    "Hybrid (traditional + alternative)": "models/hybrid_logistic_regression.joblib",
+    "Hybrid (HistGradientBoosting)": "models/hybrid_hist_gradient_boosting.joblib"
+  },
+  "cohorts": {
+    "overall_test_set": {
+      "definition": "All held-out synthetic test records",
+      "n_samples": 2000,
+      "n_positive": 550,
+      "n_negative": 1450,
+      "synthetic_default_rate": 0.275
+    },
+    "no_bureau_history": {
+      "definition": "Held-out synthetic test records with bureau_history_available == 0",
+      "n_samples": 926,
+      "n_positive": 259,
+      "n_negative": 667,
+      "synthetic_default_rate": 0.2796976241900648
+    }
+  },
+  "model_pair_definitions": [
+    {
+      "model_a": "Hybrid (traditional + alternative)",
+      "model_b": "Traditional baseline",
+      "subtraction_direction": "Hybrid (traditional + alternative) minus Traditional baseline"
+    },
+    {
+      "model_a": "Hybrid (HistGradientBoosting)",
+      "model_b": "Traditional baseline",
+      "subtraction_direction": "Hybrid (HistGradientBoosting) minus Traditional baseline"
+    },
+    {
+      "model_a": "Hybrid (HistGradientBoosting)",
+      "model_b": "Hybrid (traditional + alternative)",
+      "subtraction_direction": "Hybrid (HistGradientBoosting) minus Hybrid (traditional + alternative)"
+    }
+  ],
+  "metric_names": [
+    "roc_auc",
+    "gini_coefficient",
+    "ks_statistic",
+    "average_precision",
+    "brier_score",
+    "log_loss",
+    "ece_10_bins"
+  ],
+  "metric_directions": {
+    "roc_auc": "higher",
+    "gini_coefficient": "higher",
+    "ks_statistic": "higher",
+    "average_precision": "higher",
+    "brier_score": "lower",
+    "log_loss": "lower",
+    "ece_10_bins": "lower"
+  },
+  "bootstrap_configuration": {
+    "n_bootstrap_requested": 1000,
+    "n_bootstrap_valid": {
+      "overall_test_set": 1000,
+      "no_bureau_history": 1000
+    },
+    "confidence_level": 0.95,
+    "method": "two-sided percentile interval",
+    "seed": 2027
+  },
+  "environment_versions": {
+    "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "numpy_version": "2.5.4",
+    "pandas_version": "3.0.6",
+    "scikit_learn_version": "1.7.2",
+    "matplotlib_version": "3.11.2"
+  },
+  "conditioning_scope_and_limitations": "These percentile intervals summarize uncertainty arising strictly from resampling held-out observations for fixed, already-fitted model artifacts. They do NOT include uncertainty from retraining on a new training set, changing the synthetic data-generation process, temporal distribution shifts, or real-world population changes. Paired intervals use shared observation indices, preserving observation-level covariance across model predictions. An interval crossing zero does not establish that two models are equivalent, and an interval excluding zero is not by itself proof of business significance or deployment readiness.",
+  "synthetic_data_disclaimer": "This project is an educational credit-risk prototype trained and evaluated exclusively on synthetic data. All applicant profiles, bureau scores, alternative features, and default outcomes are mathematically simulated. No real-world financial, underwriting, credit-invisible fairness, or legal compliance inferences may be drawn."
+}

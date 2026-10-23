@@ -70,6 +70,8 @@ import explainability  # noqa: E402
 import risk_scoring  # noqa: E402
 import inference_helper  # noqa: E402
 import experiments.alternative_feature_ablation as ablation_exp  # noqa: E402
+import uncertainty_analysis  # noqa: E402
+
 
 
 # ---------------------------------------------------------------------------
@@ -2633,6 +2635,290 @@ class TestAlternativeFeatureAblationExperiment(unittest.TestCase):
         self.assertIn("paired_delta_tolerances", meta)
         self.assertEqual(meta["paired_delta_tolerances"], ablation_exp.PAIRED_DELTA_TOLERANCES)
         self.assertIn("delta_classification_policy", meta)
+
+
+class TestBootstrapUncertaintyAnalysis(unittest.TestCase):
+    """Regression and contract tests for Phase 07 bootstrap uncertainty analysis."""
+
+    def setUp(self):
+        # Create deterministic toy binary labels and model predictions (N=60)
+        rng = np.random.default_rng(42)
+        self.n_samples = 60
+        # Ensure balanced classes: 20 ones, 40 zeros
+        self.y_true = np.array([1] * 20 + [0] * 40)
+        # Model A: moderate accuracy
+        self.p_a = np.clip(
+            np.where(
+                self.y_true == 1,
+                rng.uniform(0.4, 0.9, size=60),
+                rng.uniform(0.1, 0.6, size=60),
+            ),
+            0.0,
+            1.0,
+        )
+        # Model B: slightly higher discrimination
+        self.p_b = np.clip(
+            np.where(
+                self.y_true == 1,
+                rng.uniform(0.6, 0.95, size=60),
+                rng.uniform(0.05, 0.4, size=60),
+            ),
+            0.0,
+            1.0,
+        )
+        self.model_preds = {
+            "ModelA": self.p_a,
+            "ModelB": self.p_b,
+        }
+        self.pairs = [
+            ("ModelB", "ModelA"),
+            ("ModelA", "ModelA"),  # Identical model comparison
+        ]
+
+    def test_bootstrap_output_shape_and_column_schema(self):
+        """Bootstrap cohort analysis must produce DataFrames with required column schemas."""
+        m_df, p_df, req, val = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=self.pairs,
+            n_bootstrap=25,
+            seed=2027,
+            confidence_level=0.95,
+        )
+        self.assertEqual(req, 25)
+        self.assertEqual(val, 25)
+
+        required_model_cols = [
+            "cohort",
+            "n_samples",
+            "n_positive",
+            "n_negative",
+            "model",
+            "metric",
+            "point_estimate",
+            "ci_lower",
+            "ci_upper",
+            "confidence_level",
+            "method",
+            "n_bootstrap_requested",
+            "n_bootstrap_valid",
+            "bootstrap_seed",
+        ]
+        self.assertEqual(list(m_df.columns), required_model_cols)
+        # 2 models * 7 metrics = 14 rows
+        self.assertEqual(len(m_df), 2 * 7)
+
+        required_paired_cols = [
+            "cohort",
+            "n_samples",
+            "model_a",
+            "model_b",
+            "metric",
+            "metric_direction",
+            "point_delta",
+            "ci_lower",
+            "ci_upper",
+            "confidence_level",
+            "method",
+            "n_bootstrap_requested",
+            "n_bootstrap_valid",
+            "bootstrap_seed",
+            "interval_excludes_zero",
+        ]
+        self.assertEqual(list(p_df.columns), required_paired_cols)
+        # 2 pairs * 7 metrics = 14 rows
+        self.assertEqual(len(p_df), 2 * 7)
+
+    def test_finite_ordered_interval_bounds(self):
+        """All confidence intervals must be finite and satisfy ci_lower <= ci_upper."""
+        m_df, p_df, _, _ = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=self.pairs,
+            n_bootstrap=25,
+            seed=2027,
+            confidence_level=0.95,
+        )
+        for _, row in m_df.iterrows():
+            self.assertTrue(np.isfinite(row["ci_lower"]))
+            self.assertTrue(np.isfinite(row["ci_upper"]))
+            self.assertLessEqual(row["ci_lower"], row["ci_upper"])
+
+        for _, row in p_df.iterrows():
+            self.assertTrue(np.isfinite(row["ci_lower"]))
+            self.assertTrue(np.isfinite(row["ci_upper"]))
+            self.assertLessEqual(row["ci_lower"], row["ci_upper"])
+
+    def test_point_estimate_computation_original_observations(self):
+        """Point estimates must exactly match metric calculations on unresampled original cohort."""
+        m_df, p_df, _, _ = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=self.pairs,
+            n_bootstrap=25,
+            seed=2027,
+            confidence_level=0.95,
+        )
+        expected_metrics_a = uncertainty_analysis.compute_model_metrics(self.y_true, self.p_a)
+        expected_metrics_b = uncertainty_analysis.compute_model_metrics(self.y_true, self.p_b)
+
+        for _, row in m_df[m_df["model"] == "ModelA"].iterrows():
+            self.assertAlmostEqual(row["point_estimate"], expected_metrics_a[row["metric"]], places=9)
+
+        for _, row in p_df[p_df["model_a"] == "ModelB"].iterrows():
+            expected_delta = expected_metrics_b[row["metric"]] - expected_metrics_a[row["metric"]]
+            self.assertAlmostEqual(row["point_delta"], expected_delta, places=9)
+
+    def test_reproducibility_and_seed_sensitivity(self):
+        """Identical seeds must yield identical intervals; different seeds must produce different resamples."""
+        m_df1, p_df1, _, _ = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=self.pairs,
+            n_bootstrap=30,
+            seed=2027,
+        )
+        m_df2, p_df2, _, _ = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=self.pairs,
+            n_bootstrap=30,
+            seed=2027,
+        )
+        pd.testing.assert_frame_equal(m_df1, m_df2)
+        pd.testing.assert_frame_equal(p_df1, p_df2)
+
+        m_df_diff, _, _, _ = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=self.pairs,
+            n_bootstrap=30,
+            seed=9999,
+        )
+        # At least one bound should differ between seed 2027 and seed 9999
+        self.assertFalse(np.allclose(m_df1["ci_lower"].values, m_df_diff["ci_lower"].values))
+
+    def test_paired_deltas_on_shared_indices_and_identical_model(self):
+        """Paired deltas on shared indices with identical models must yield zero delta and zero width."""
+        _, p_df, _, _ = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=[("ModelA", "ModelA")],
+            n_bootstrap=25,
+            seed=2027,
+        )
+        for _, row in p_df.iterrows():
+            self.assertEqual(row["point_delta"], 0.0)
+            self.assertEqual(row["ci_lower"], 0.0)
+            self.assertEqual(row["ci_upper"], 0.0)
+            self.assertFalse(row["interval_excludes_zero"])
+
+    def test_metric_direction_and_interpretation(self):
+        """Classification metrics must use 'higher' direction; error/calibration must use 'lower'."""
+        _, p_df, _, _ = uncertainty_analysis.bootstrap_cohort_analysis(
+            cohort_name="toy_cohort",
+            y_true=self.y_true,
+            model_predictions=self.model_preds,
+            paired_comparisons=[("ModelB", "ModelA")],
+            n_bootstrap=25,
+            seed=2027,
+        )
+        for _, row in p_df.iterrows():
+            if row["metric"] in {"roc_auc", "gini_coefficient", "ks_statistic", "average_precision"}:
+                self.assertEqual(row["metric_direction"], "higher")
+            else:
+                self.assertEqual(row["metric_direction"], "lower")
+
+    def test_one_class_replicates_handled_explicitly(self):
+        """Replicates containing only one class must be detected and discarded without raising unhandled errors."""
+        # Single-class dataset must raise ValueError in compute_model_metrics
+        with self.assertRaises(ValueError):
+            uncertainty_analysis.compute_model_metrics([0, 0, 0], [0.1, 0.2, 0.3])
+
+        # If a cohort has only one class, bootstrap_cohort_analysis must fail clearly
+        with self.assertRaises(ValueError):
+            uncertainty_analysis.bootstrap_cohort_analysis(
+                cohort_name="single_class",
+                y_true=[1, 1, 1],
+                model_predictions={"m": [0.5, 0.5, 0.5]},
+                paired_comparisons=[("m", "m")],
+            )
+
+    def test_invalid_arguments_and_inputs_fail_clearly(self):
+        """Invalid bootstrap arguments, probabilities, or shapes must raise ValueError."""
+        # Argument validation
+        for inv_n in [0, -10, None, 2.5, "100", True]:
+            with self.subTest(invalid_n=inv_n):
+                with self.assertRaises(ValueError):
+                    uncertainty_analysis.validate_arguments(inv_n, 2027, 0.95)  # type: ignore
+
+        for inv_seed in [-1, None, "2027", True]:
+            with self.subTest(invalid_seed=inv_seed):
+                with self.assertRaises(ValueError):
+                    uncertainty_analysis.validate_arguments(100, inv_seed, 0.95)  # type: ignore
+
+        for inv_conf in [0.0, 1.0, -0.5, 1.5, float("nan"), float("inf"), None, "0.95", True]:
+            with self.subTest(invalid_conf=inv_conf):
+                with self.assertRaises(ValueError):
+                    uncertainty_analysis.validate_arguments(100, 2027, inv_conf)  # type: ignore
+
+        # Array validation
+        with self.assertRaises(ValueError):
+            uncertainty_analysis.compute_model_metrics([0, 1], [0.2, 1.5])  # > 1.0
+        with self.assertRaises(ValueError):
+            uncertainty_analysis.compute_model_metrics([0, 1], [0.2, float("nan")])  # NaN
+        with self.assertRaises(ValueError):
+            uncertainty_analysis.compute_model_metrics([0, 1, 0], [0.2, 0.8])  # Length mismatch
+
+    def test_metadata_generation_and_package_versions(self):
+        """Metadata helper and committed run_metadata.json must include required keys and packages."""
+        versions = uncertainty_analysis.get_installed_dependency_versions()
+        required_pkgs = [
+            "python_version",
+            "numpy_version",
+            "pandas_version",
+            "scikit_learn_version",
+            "matplotlib_version",
+        ]
+        for p in required_pkgs:
+            self.assertIn(p, versions)
+            self.assertIsInstance(versions[p], str)
+            self.assertNotEqual(versions[p], "not_installed")
+
+        meta_file = ROOT / "reports" / "uncertainty" / "run_metadata.json"
+        self.assertTrue(meta_file.exists())
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        self.assertIn("cohorts", meta)
+        self.assertIn("model_pair_definitions", meta)
+        self.assertIn("conditioning_scope_and_limitations", meta)
+        self.assertIn("synthetic_data_disclaimer", meta)
+
+    def test_no_bureau_mask_alignment_and_cohort_counts(self):
+        """The no_bureau_history cohort mask must align accurately with test observations."""
+        from sklearn.model_selection import train_test_split
+
+        df = pd.read_csv(ROOT / "data" / "synthetic_applicants.csv")
+        train_df, test_df = train_test_split(
+            df, test_size=0.20, random_state=2026, stratify=df[train.TARGET]
+        )
+
+        sub_mask = test_df["bureau_history_available"].eq(0)
+        self.assertEqual(sub_mask.sum(), 926)
+
+        m_file = ROOT / "reports" / "uncertainty" / "model_metric_confidence_intervals.csv"
+        self.assertTrue(m_file.exists())
+        m_df = pd.read_csv(m_file)
+        sub_rows = m_df[m_df["cohort"] == "no_bureau_history"]
+        self.assertTrue((sub_rows["n_samples"] == 926).all())
+        self.assertTrue((sub_rows["n_positive"] == 259).all())
+        self.assertTrue((sub_rows["n_negative"] == 667).all())
 
 
 if __name__ == "__main__":
