@@ -67,6 +67,7 @@ import validation  # noqa: E402
 import joblib  # noqa: E402
 import explainability  # noqa: E402
 import risk_scoring  # noqa: E402
+import inference_helper  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1670,6 +1671,249 @@ class TestDocumentationConsistency(unittest.TestCase):
         self.assertNotIn("4× to 10×", exp_summary)
         self.assertNotIn("satisfy interpretability and adverse-action transparency requirements", exp_summary)
         self.assertNotIn("mathematical foundation for adverse-action notices", exp_summary)
+
+
+# ---------------------------------------------------------------------------
+# Phase 04 Tests: Streamlit Integration & Shared Inference Helper
+# ---------------------------------------------------------------------------
+
+class TestStreamlitIntegrationAndInferenceHelper(unittest.TestCase):
+    """Verify shared inference helper, applicant row construction, and Streamlit AppTest integration."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.model_path = ROOT / "models" / "hybrid_logistic_regression.joblib"
+        cls.model = inference_helper.load_saved_model(cls.model_path)
+
+    def test_applicant_row_construction_defaults(self):
+        """Default applicant row must construct a valid 1-row DataFrame matching ALL_FEATURES."""
+        row = inference_helper.build_applicant_row(
+            age_years=30,
+            monthly_income_inr=40000.0,
+            employment_tenure_years=4.0,
+            debt_to_income_ratio=0.35,
+            existing_loan_count=1,
+            credit_utilization_ratio=0.40,
+            prior_delinquencies_24m=0,
+            bureau_history_available=1,
+            bureau_score=650.0,
+            utility_payment_timeliness=0.82,
+            rental_payment_timeliness=0.80,
+            digital_payment_regularity=0.75,
+            cashflow_stability_index=0.68,
+            alternative_history_months=15,
+        )
+        self.assertEqual(row.shape, (1, len(validation.ALL_FEATURES)))
+        self.assertListEqual(list(row.columns), validation.ALL_FEATURES)
+        validation.validate_feature_frame(row, expected_features=validation.ALL_FEATURES)
+
+    def test_applicant_row_construction_no_bureau(self):
+        """Applicants without bureau record must have bureau_score=NaN and pass validation."""
+        # Test integer flag 0
+        row_int = inference_helper.build_applicant_row(
+            age_years=25,
+            monthly_income_inr=30000.0,
+            employment_tenure_years=2.0,
+            debt_to_income_ratio=0.30,
+            existing_loan_count=0,
+            credit_utilization_ratio=0.20,
+            prior_delinquencies_24m=0,
+            bureau_history_available=0,
+            bureau_score=650.0,  # Should be forced to NaN
+        )
+        self.assertTrue(np.isnan(row_int["bureau_score"].iloc[0]))
+        self.assertEqual(row_int["bureau_history_available"].iloc[0], 0)
+        validation.validate_feature_frame(row_int, expected_features=validation.ALL_FEATURES)
+
+        # Test boolean False
+        row_bool = inference_helper.build_applicant_row(
+            age_years=25,
+            monthly_income_inr=30000.0,
+            employment_tenure_years=2.0,
+            debt_to_income_ratio=0.30,
+            existing_loan_count=0,
+            credit_utilization_ratio=0.20,
+            prior_delinquencies_24m=0,
+            bureau_history_available=False,
+            bureau_score=None,
+        )
+        self.assertTrue(np.isnan(row_bool["bureau_score"].iloc[0]))
+        self.assertEqual(row_bool["bureau_history_available"].iloc[0], 0)
+        validation.validate_feature_frame(row_bool, expected_features=validation.ALL_FEATURES)
+
+    def test_applicant_row_construction_partial_missing_alternative(self):
+        """Marking specific alternative fields unavailable assigns NaN and passes validation."""
+        unavail = ["utility_payment_timeliness", "cashflow_stability_index"]
+        row = inference_helper.build_applicant_row(
+            age_years=35,
+            monthly_income_inr=50000.0,
+            employment_tenure_years=6.0,
+            debt_to_income_ratio=0.25,
+            existing_loan_count=1,
+            credit_utilization_ratio=0.30,
+            prior_delinquencies_24m=0,
+            bureau_history_available=1,
+            bureau_score=700.0,
+            unavailable_alternative_features=unavail,
+        )
+        for col in unavail:
+            self.assertTrue(np.isnan(row[col].iloc[0]), f"Expected NaN for {col}")
+        # Retained fields must be finite floats
+        self.assertFalse(np.isnan(row["rental_payment_timeliness"].iloc[0]))
+        self.assertFalse(np.isnan(row["digital_payment_regularity"].iloc[0]))
+        self.assertFalse(np.isnan(row["alternative_history_months"].iloc[0]))
+        validation.validate_feature_frame(row, expected_features=validation.ALL_FEATURES)
+
+    def test_applicant_row_construction_all_alternative_missing(self):
+        """All five alternative features unavailable assigns NaN to all five and passes validation."""
+        all_alt = list(validation.ALTERNATIVE_FEATURES)
+        row = inference_helper.build_applicant_row(
+            age_years=40,
+            monthly_income_inr=60000.0,
+            employment_tenure_years=8.0,
+            debt_to_income_ratio=0.20,
+            existing_loan_count=1,
+            credit_utilization_ratio=0.25,
+            prior_delinquencies_24m=0,
+            bureau_history_available=1,
+            bureau_score=720.0,
+            unavailable_alternative_features=all_alt,
+        )
+        for col in all_alt:
+            self.assertTrue(np.isnan(row[col].iloc[0]), f"Expected NaN for {col}")
+        validation.validate_feature_frame(row, expected_features=validation.ALL_FEATURES)
+
+    def test_validation_failure_prevents_inference(self):
+        """Malformed or out-of-bounds applicant inputs must fail validation before model invocation."""
+        bad_row = inference_helper.build_applicant_row(
+            age_years=15,  # Below supported minimum of 20
+            monthly_income_inr=40000.0,
+            employment_tenure_years=4.0,
+            debt_to_income_ratio=0.35,
+            existing_loan_count=1,
+            credit_utilization_ratio=0.40,
+            prior_delinquencies_24m=0,
+            bureau_history_available=1,
+            bureau_score=650.0,
+        )
+        with self.assertRaises(validation.ValidationError) as cm:
+            validation.validate_feature_frame(bad_row, expected_features=validation.ALL_FEATURES)
+        self.assertIn("age_years", str(cm.exception))
+
+        # run_inference_pipeline with validate=True must raise ValidationError
+        with self.assertRaises(validation.ValidationError):
+            inference_helper.run_inference_pipeline(self.model, bad_row, validate=True)
+
+    def test_inference_pipeline_shared_helpers_integration(self):
+        """End-to-end inference helper must produce probability, score, band, and explanation."""
+        row = inference_helper.build_applicant_row(
+            age_years=30,
+            monthly_income_inr=40000.0,
+            employment_tenure_years=4.0,
+            debt_to_income_ratio=0.35,
+            existing_loan_count=1,
+            credit_utilization_ratio=0.40,
+            prior_delinquencies_24m=0,
+            bureau_history_available=1,
+            bureau_score=650.0,
+        )
+        res = inference_helper.run_inference_pipeline(self.model, row, validate=True)
+        self.assertIsInstance(res.probability, float)
+        self.assertTrue(0.0 <= res.probability <= 1.0)
+
+        # Verify score equals direct probability_to_score
+        expected_score = risk_scoring.probability_to_score(res.probability)
+        self.assertEqual(res.score_result.display_score, expected_score.display_score)
+        self.assertAlmostEqual(res.score_result.raw_score, expected_score.raw_score, places=5)
+
+        # Verify band equals direct map_probability_to_risk_band
+        expected_band = risk_scoring.map_probability_to_risk_band(res.probability)
+        self.assertEqual(res.risk_band, expected_band)
+
+        # Verify explanation integrity
+        self.assertLess(res.explanation.reconstruction_error, 1e-5)
+        self.assertEqual(len(res.explanation.top_risk_increasing), 3)
+        self.assertEqual(len(res.explanation.top_risk_decreasing), 3)
+
+    def test_local_explanation_reconstruction_across_profiles(self):
+        """Local explanation reconstruction must be exact for default, no-bureau, and cold-start profiles."""
+        profiles = [
+            # Default profile
+            inference_helper.build_applicant_row(
+                age_years=30, monthly_income_inr=40000.0, employment_tenure_years=4.0,
+                debt_to_income_ratio=0.35, existing_loan_count=1, credit_utilization_ratio=0.40,
+                prior_delinquencies_24m=0, bureau_history_available=1, bureau_score=650.0,
+            ),
+            # No-bureau profile
+            inference_helper.build_applicant_row(
+                age_years=28, monthly_income_inr=35000.0, employment_tenure_years=3.0,
+                debt_to_income_ratio=0.45, existing_loan_count=0, credit_utilization_ratio=0.10,
+                prior_delinquencies_24m=1, bureau_history_available=0, bureau_score=None,
+            ),
+            # All alternative missing (cold start)
+            inference_helper.build_applicant_row(
+                age_years=45, monthly_income_inr=70000.0, employment_tenure_years=10.0,
+                debt_to_income_ratio=0.20, existing_loan_count=2, credit_utilization_ratio=0.30,
+                prior_delinquencies_24m=0, bureau_history_available=1, bureau_score=750.0,
+                unavailable_alternative_features=list(validation.ALTERNATIVE_FEATURES),
+            ),
+        ]
+        for idx, row in enumerate(profiles):
+            with self.subTest(profile_index=idx):
+                res = inference_helper.run_inference_pipeline(self.model, row, validate=True)
+                self.assertLess(res.explanation.reconstruction_error, 1e-5)
+
+    def test_load_saved_model_missing_raises_file_not_found(self):
+        """load_saved_model with non-existent path must raise FileNotFoundError."""
+        with self.assertRaises(FileNotFoundError):
+            inference_helper.load_saved_model(ROOT / "models" / "non_existent_model.joblib")
+
+    def test_load_saved_model_ensures_multi_class_compatibility(self):
+        """Loaded model must guarantee multi_class attribute exists on LogisticRegression."""
+        model = inference_helper.load_saved_model()
+        clf = model.named_steps["classifier"]
+        self.assertTrue(hasattr(clf, "multi_class"))
+
+    def test_streamlit_apptest_initial_render(self):
+        """Streamlit app must render cleanly without unhandled exceptions."""
+        from streamlit.testing.v1 import AppTest
+
+        at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=30)
+        at.run()
+        self.assertEqual(len(at.exception), 0, f"Exceptions on initial render: {at.exception}")
+        self.assertGreater(len(at.button), 0, "Submit button not found")
+
+    def test_streamlit_apptest_form_submission_default(self):
+        """Submitting default form in AppTest must run inference and display outputs without error."""
+        from streamlit.testing.v1 import AppTest
+
+        at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=30)
+        at.run()
+        at.button[0].click().run()
+        self.assertEqual(len(at.exception), 0, f"Exceptions on form submission: {at.exception}")
+        # Verify metric components are present in the output
+        self.assertGreaterEqual(len(at.metric), 3)
+
+    def test_streamlit_apptest_form_submission_no_bureau(self):
+        """Unchecking bureau history in AppTest and submitting must execute cleanly."""
+        from streamlit.testing.v1 import AppTest
+
+        at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=30)
+        at.run()
+        at.checkbox[0].uncheck().run()
+        at.button[0].click().run()
+        self.assertEqual(len(at.exception), 0, f"Exceptions on no-bureau submission: {at.exception}")
+
+    def test_streamlit_apptest_form_submission_missing_alternative(self):
+        """Marking alternative fields unavailable in AppTest must execute cleanly."""
+        from streamlit.testing.v1 import AppTest
+
+        at = AppTest.from_file(str(ROOT / "app.py"), default_timeout=30)
+        at.run()
+        at.multiselect[0].select("utility_payment_timeliness").run()
+        at.multiselect[0].select("digital_payment_regularity").run()
+        at.button[0].click().run()
+        self.assertEqual(len(at.exception), 0, f"Exceptions on missing-alt submission: {at.exception}")
 
 
 if __name__ == "__main__":

@@ -58,6 +58,13 @@ For the hybrid Logistic Regression model, predictions provide exact additive loc
 $$\text{decision\_function}(\mathbf{x}') = \beta_0 + \sum_{j=1}^M \beta_j x'_j$$
 The sum of local feature contributions ($\beta_j x'_j$) and global intercept ($\beta_0$) reconstructs the model decision function to within machine precision ($< 10^{-14}$). Positive contributions increase the model's log-odds of synthetic default; negative contributions reduce them. These values represent the fitted model's mathematical behavior on normalized inputs, not causal effects. They are educational explanations and are not legally sufficient adverse-action reason codes or proof of regulatory compliance.
 
+## Interactive Demonstration Interface
+An interactive demonstration interface (`app.py`) provides graphical access to the hybrid Logistic Regression model:
+- **Input Controls:** Widget ranges strictly match the validator domain bounds in `validation.py`.
+- **Missingness Simulation:** Unbanked or cold-start scenarios are supported via toggles for unavailable bureau history (forcing `bureau_score = NaN`) and multiselect controls for unavailable alternative-data records (assigning actual `NaN` values to test imputation).
+- **Mandatory Pre-Inference Validation:** Assembled rows are passed through `validate_feature_frame()` before inference. Model execution is rejected with user-facing alerts if any contract boundary is violated.
+- **Shared Implementation:** All scoring, risk-band mappings, and additive local explanations invoke the core functions (`risk_scoring.py`, `explainability.py`, and `inference_helper.py`) without divergent UI logic.
+
 ## Limitations
 - Simulated population, features, missingness and target generation.
 - Synthetic no-bureau-history group is not a validated representation of credit-invisible borrowers.

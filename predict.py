@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from explainability import explain_logistic_prediction
+from inference_helper import build_applicant_row, load_saved_model
 from risk_scoring import (
     DEFAULT_BASE_ODDS,
     DEFAULT_BASE_SCORE,
@@ -39,25 +40,23 @@ def main() -> None:
     parser.add_argument("--cashflow-stability", type=float, default=0.68)
     parser.add_argument("--alternative-months", type=int, default=15)
     args = parser.parse_args()
-    if not MODEL_PATH.exists():
-        sys.exit("Saved model not found. Run `python train.py` first.")
 
-    row = pd.DataFrame([{
-        "age_years": args.age,
-        "monthly_income_inr": args.income,
-        "employment_tenure_years": args.employment,
-        "debt_to_income_ratio": args.dti,
-        "existing_loan_count": args.loans,
-        "credit_utilization_ratio": args.utilization,
-        "prior_delinquencies_24m": args.delinquencies,
-        "bureau_history_available": 0 if args.no_bureau else 1,
-        "bureau_score": np.nan if args.no_bureau else args.bureau_score,
-        "utility_payment_timeliness": args.utility,
-        "rental_payment_timeliness": args.rental,
-        "digital_payment_regularity": args.digital_regularity,
-        "cashflow_stability_index": args.cashflow_stability,
-        "alternative_history_months": args.alternative_months,
-    }])
+    row = build_applicant_row(
+        age_years=args.age,
+        monthly_income_inr=args.income,
+        employment_tenure_years=args.employment,
+        debt_to_income_ratio=args.dti,
+        existing_loan_count=args.loans,
+        credit_utilization_ratio=args.utilization,
+        prior_delinquencies_24m=args.delinquencies,
+        bureau_history_available=0 if args.no_bureau else 1,
+        bureau_score=args.bureau_score,
+        utility_payment_timeliness=args.utility,
+        rental_payment_timeliness=args.rental,
+        digital_payment_regularity=args.digital_regularity,
+        cashflow_stability_index=args.cashflow_stability,
+        alternative_history_months=args.alternative_months,
+    )
 
     # Pre-inference validation
     try:
@@ -65,7 +64,10 @@ def main() -> None:
     except ValidationError as err:
         sys.exit(f"Input validation error: {err}")
 
-    model = joblib.load(MODEL_PATH)
+    try:
+        model = load_saved_model(MODEL_PATH)
+    except FileNotFoundError as err:
+        sys.exit(str(err))
     p = float(model.predict_proba(row)[0, 1])
 
     # Phase 03: Illustrative credit score & risk band
