@@ -12,8 +12,8 @@ For future hosted demonstration (e.g. Streamlit Community Cloud, containerized s
 
 ### Prerequisites:
 - **Operating Environment:** Linux (Ubuntu 22.04+ or Debian 12+) or container runtime (Docker / OCI).
-- **Python Runtime:** Python `3.10`–`3.13` (tested on `3.13.7` and `3.12` CI runner).
-- **Dependencies:** Exact dependencies specified in `requirements.txt`:
+- **Python Runtime:** Python `3.10`–`3.13` (tested locally on Python `3.13.7` and configured for Python `3.12` on `ubuntu-latest` CI runner).
+- **Dependency Constraints:** The project uses version range constraints declared in `requirements.txt`:
   ```
   numpy>=2.0
   pandas>=2.0
@@ -47,8 +47,8 @@ If `models/hybrid_logistic_regression.joblib` is absent, the application halts g
 ## 3. scikit-learn Serialization Compatibility
 
 - The saved model pipelines were serialized with scikit-learn `1.7.x`.
-- In scikit-learn 1.8+, `multi_class` was removed from the `LogisticRegression` constructor, though internal unpickling paths may still query the attribute.
-- The shared loader in `inference_helper.load_saved_model()` automatically verifies and restores `classifier.multi_class = "auto"` if missing, guaranteeing backward-compatible inference across supported scikit-learn versions.
+- The project declares the dependency constraint `scikit-learn>=1.4,<1.8` in `requirements.txt`. Environments outside this range (such as unreleased scikit-learn 1.8+) have not been verified and are not claimed as supported runtime environments.
+- As defensive code, the shared loader in `inference_helper.load_saved_model()` inspects and restores `classifier.multi_class = "auto"` if missing after unpickling. This guards against potential deserialization regressions during unpickling across supported releases, without asserting untested cross-version compatibility beyond the declared `<1.8` constraint.
 
 ---
 
@@ -77,7 +77,8 @@ COPY models/ ./models/
 # Expose Streamlit port
 EXPOSE 8501
 
-HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+# Self-contained healthcheck using Python standard library (no external curl package required)
+HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" || exit 1
 
 ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
 ```

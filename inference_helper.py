@@ -86,11 +86,11 @@ def _validate_and_coerce_int(val: object, field_name: str) -> int:
     float_val = float(val)
     if not np.isfinite(float_val):
         raise ValidationError(f"Field '{field_name}' must be finite; got {val}.")
-    if not np.isclose(float_val, round(float_val)):
+    if not float_val.is_integer():
         raise ValidationError(
             f"Field '{field_name}' must be an integer; got fractional value {val}."
         )
-    return int(round(float_val))
+    return int(float_val)
 
 
 def _validate_and_coerce_float(val: object, field_name: str) -> float:
@@ -116,8 +116,9 @@ def _validate_bureau_flag(val: object) -> int:
             return int(val)
         raise ValidationError(f"Field 'bureau_history_available' must be 0 or 1; got {val}.")
     if isinstance(val, (float, np.floating)):
-        if np.isfinite(val) and np.isclose(float(val), round(float(val))) and int(round(float(val))) in (0, 1):
-            return int(round(float(val)))
+        float_val = float(val)
+        if np.isfinite(float_val) and float_val.is_integer() and int(float_val) in (0, 1):
+            return int(float_val)
         raise ValidationError(f"Field 'bureau_history_available' must be 0 or 1; got {val}.")
     raise ValidationError(
         f"Field 'bureau_history_available' must be binary {{0, 1}} or bool; got {type(val).__name__}."
@@ -250,10 +251,10 @@ def run_inference_pipeline(
     proba_out = model.predict_proba(row)
     proba_arr = np.asarray(proba_out)
 
-    if proba_arr.ndim != 2 or proba_arr.shape[0] != 1 or proba_arr.shape[1] < 2:
+    if proba_arr.shape != (1, 2):
         raise ValueError(
             f"Model predict_proba returned unexpected output shape {proba_arr.shape}; "
-            "expected (1, 2) for binary classification."
+            "expected exactly (1, 2) for single-applicant binary classification."
         )
 
     prob_val = proba_arr[0, 1]

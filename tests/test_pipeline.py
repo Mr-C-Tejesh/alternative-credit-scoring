@@ -2088,6 +2088,30 @@ class TestInferenceHardeningAndReliability(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
 
+    def test_run_inference_pipeline_rejects_three_column_multiclass_output(self):
+        """Model returning a 3-column array must be rejected as malformed binary output."""
+        valid_row = self._call_build()
+        mock_model = MagicMock()
+        mock_model.predict_proba.return_value = np.array([[0.2, 0.7, 0.1]])
+        with self.assertRaises(ValueError) as cm:
+            inference_helper.run_inference_pipeline(mock_model, valid_row, validate=False)
+        self.assertIn("expected exactly (1, 2)", str(cm.exception))
+
+    def test_near_integer_fractional_values_strictly_rejected(self):
+        """Values extremely close to integers must be rejected rather than rounded via tolerance."""
+        near_integer_cases = [
+            ("age_years", 30.0001),
+            ("existing_loan_count", 1.00001),
+            ("prior_delinquencies_24m", 1.000001),
+            ("alternative_history_months", 12.0001),
+        ]
+        for field, bad_val in near_integer_cases:
+            with self.subTest(field=field, bad_val=bad_val):
+                with self.assertRaises(validation.ValidationError) as cm:
+                    self._call_build(**{field: bad_val})
+                self.assertIn(f"Field '{field}'", str(cm.exception))
+                self.assertIn("must be an integer", str(cm.exception))
+
     def test_run_inference_pipeline_rejects_multi_row_or_non_dataframe(self):
         """Inference pipeline expects exactly 1 DataFrame row; rejects non-DataFrame or multi-row inputs."""
         mock_model = MagicMock()

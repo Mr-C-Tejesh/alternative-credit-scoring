@@ -28,14 +28,15 @@ The implementation includes:
 
 ## 2. Environment & System Requirements
 
-- **Python Version:** Python `3.10` to `3.13` (tested and verified on Python `3.13.7` and `3.12` CI).
-- **Primary Dependencies (`requirements.txt`):**
+- **Python Runtime:** Python `3.10` to `3.13`. Tested and verified locally on macOS with Python `3.13.7` and automatically executed in CI with Python `3.12` on `ubuntu-latest`.
+- **Dependency Constraints (`requirements.txt`):** The repository declares compatible version ranges (constraints) rather than exact pins:
   - `numpy>=2.0`
   - `pandas>=2.0`
-  - `scikit-learn>=1.4,<1.8` *(backward-compatibility attribute shim handled for scikit-learn 1.8+)*
+  - `scikit-learn>=1.4,<1.8` *(trained on 1.7.x; includes a defensive deserialization shim in `inference_helper.load_saved_model()`)*
   - `matplotlib>=3.8`
   - `joblib>=1.3`
   - `streamlit>=1.35`
+- **Continuous Integration Status:** Automated testing is configured in `.github/workflows/tests.yml` for pushes and pull requests to `main` on Python `3.12` (`ubuntu-latest`). Remote execution for the verified base commit (`c090464`) was confirmed passing (`success`).
 
 ---
 
@@ -45,7 +46,7 @@ The implementation includes:
 
 ```bash
 git clone https://github.com/Mr-C-Tejesh/alternative-credit-scoring.git
-cd alternative_credit_scoring
+cd alternative-credit-scoring
 
 # Create virtual environment
 python -m venv .venv
@@ -63,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 147 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, and Streamlit `AppTest` execution:
+The test suite contains 149 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, and Streamlit `AppTest` execution:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -181,7 +182,7 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 147 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 149 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── train.py                     # Synthetic data generation and model training pipeline
