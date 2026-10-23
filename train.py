@@ -514,20 +514,63 @@ def calculate_threshold_metrics(
     """
     single_threshold_mode = False
     if threshold is not None:
-        thresholds = [float(threshold)]
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float, np.floating)):
+            raise TypeError(f"threshold must be numeric; got {type(threshold).__name__}.")
+        if not np.isfinite(threshold):
+            raise ValueError(f"threshold must be a finite number; got {threshold}.")
+        if not (0.0 <= float(threshold) <= 1.0):
+            raise ValueError(f"threshold must be in [0.0, 1.0]; got {threshold}.")
+        threshold_list = [float(threshold)]
         single_threshold_mode = True
     elif thresholds is None:
-        thresholds = [round(t, 2) for t in np.arange(0.05, 0.96, 0.05)]
+        threshold_list = [round(t, 2) for t in np.arange(0.05, 0.96, 0.05)]
+    else:
+        try:
+            threshold_list = [float(t) for t in thresholds]
+        except (TypeError, ValueError) as err:
+            raise TypeError(f"thresholds must be an iterable of numeric values: {err}") from err
+        if len(threshold_list) == 0:
+            raise ValueError("thresholds sequence must be non-empty.")
+        for idx, t in enumerate(threshold_list):
+            if not np.isfinite(t):
+                raise ValueError(f"Threshold at index {idx} must be a finite number; got {t}.")
+            if not (0.0 <= t <= 1.0):
+                raise ValueError(f"Threshold at index {idx} must be in [0.0, 1.0]; got {t}.")
 
-    y = np.asarray(y_true, dtype=int)
-    probs = np.asarray(probabilities, dtype=float)
-    if y.ndim != 1 or probs.ndim != 1:
+    # Validate 1D array shapes and non-empty lengths
+    y_arr = np.asarray(y_true)
+    probs_arr = np.asarray(probabilities)
+    if y_arr.ndim != 1 or probs_arr.ndim != 1:
         raise ValueError("y_true and probabilities must be 1D arrays.")
-    if len(y) != len(probs):
-        raise ValueError(f"Length mismatch: y_true ({len(y)}) vs probabilities ({len(probs)}).")
+    if len(y_arr) == 0:
+        raise ValueError("y_true and probabilities arrays must be non-empty.")
+    if len(y_arr) != len(probs_arr):
+        raise ValueError(f"Length mismatch: y_true ({len(y_arr)}) vs probabilities ({len(probs_arr)}).")
+
+    # Validate genuine binary labels without silent coercion
+    if not np.issubdtype(y_arr.dtype, np.number):
+        raise TypeError(f"y_true must contain numeric binary labels; got dtype {y_arr.dtype}.")
+    if not np.all(np.isfinite(y_arr)):
+        raise ValueError("y_true contains NaN or infinite values.")
+    unique_labels = set(np.unique(y_arr))
+    if not unique_labels.issubset({0, 1, 0.0, 1.0}):
+        raise ValueError(f"y_true must contain only binary labels in {{0, 1}}; got unique values {unique_labels}.")
+    y = y_arr.astype(int)
+
+    # Validate finite probabilities within [0.0, 1.0]
+    if not np.issubdtype(probs_arr.dtype, np.number):
+        raise TypeError(f"probabilities must be numeric; got dtype {probs_arr.dtype}.")
+    if not np.all(np.isfinite(probs_arr)):
+        raise ValueError("probabilities array contains NaN or infinite values.")
+    if np.any((probs_arr < 0.0) | (probs_arr > 1.0)):
+        raise ValueError(
+            f"All probabilities must be within [0.0, 1.0]; "
+            f"min={float(np.min(probs_arr))}, max={float(np.max(probs_arr))}."
+        )
+    probs = probs_arr.astype(float)
 
     rows = []
-    for t in thresholds:
+    for t in threshold_list:
         pred = (probs >= t).astype(int)
         tp = int(np.sum((y == 1) & (pred == 1)))
         fp = int(np.sum((y == 0) & (pred == 1)))

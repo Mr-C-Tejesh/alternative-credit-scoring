@@ -1140,6 +1140,64 @@ class TestProbabilityToScoreMapping(unittest.TestCase):
         self.assertTrue(hasattr(res, "default_probability"))
         self.assertTrue(hasattr(res, "odds_good_to_bad"))
 
+    def test_formula_at_risk_band_boundaries_p10_and_p20(self):
+        """Verify PDO score formula evaluates to ~550.52 at p=0.10 and ~527.12 at p=0.20."""
+        res_10 = risk_scoring.probability_to_score(0.10)
+        self.assertAlmostEqual(res_10.raw_score, 550.5218, places=3)
+        self.assertEqual(res_10.display_score, 551)
+        self.assertFalse(res_10.is_clamped)
+
+        res_20 = risk_scoring.probability_to_score(0.20)
+        self.assertAlmostEqual(res_20.raw_score, 527.1229, places=3)
+        self.assertEqual(res_20.display_score, 527)
+        self.assertFalse(res_20.is_clamped)
+
+    def test_invalid_epsilon_raises(self):
+        """Epsilon must be a finite float strictly between 0.0 and 0.5."""
+        invalid_eps_values = [0.0, -0.01, -1.0, 0.5, 0.6, 1.0, float("nan"), float("inf")]
+        for eps in invalid_eps_values:
+            with self.subTest(eps=eps):
+                with self.assertRaises(ValueError):
+                    risk_scoring.probability_to_score(0.1, eps=eps)
+                with self.assertRaises(ValueError):
+                    risk_scoring.probability_to_raw_score(0.1, eps=eps)
+
+        for invalid_type in ["0.01", None, [0.01], True, False]:
+            with self.subTest(invalid_type=invalid_type):
+                with self.assertRaises(TypeError):
+                    risk_scoring.probability_to_score(0.1, eps=invalid_type)  # type: ignore
+
+    def test_base_score_display_bounds_consistency(self):
+        """base_score must lie within [min_score, max_score] when display bounding is active."""
+        with self.assertRaises(ValueError):
+            risk_scoring.probability_to_score(0.1, base_score=900.0, min_score=300, max_score=850)
+        with self.assertRaises(ValueError):
+            risk_scoring.probability_to_score(0.1, base_score=250.0, min_score=300, max_score=850)
+        with self.assertRaises(ValueError):
+            risk_scoring.probability_to_score(0.1, min_score=850, max_score=300)
+        with self.assertRaises(TypeError):
+            risk_scoring.probability_to_score(0.1, min_score=300.5, max_score=850)  # type: ignore
+
+    def test_raw_score_unbounded_by_default_display_bounds(self):
+        """probability_to_raw_score evaluates mathematically without enforcing display bounds."""
+        raw = risk_scoring.probability_to_raw_score(0.1, base_score=1000.0, base_odds=20.0, pdo=40.0)
+        self.assertIsInstance(raw, float)
+        self.assertTrue(np.isfinite(raw))
+
+    def test_boundary_probabilities_clipped_and_finite_with_valid_eps(self):
+        """p=0.0 and p=1.0 remain finite and bounded with custom epsilon."""
+        res_0 = risk_scoring.probability_to_score(0.0, eps=1e-4)
+        self.assertTrue(np.isfinite(res_0.raw_score))
+        self.assertAlmostEqual(res_0.raw_score, 752.880, places=1)
+        self.assertEqual(res_0.display_score, 753)
+        self.assertFalse(res_0.is_clamped)
+
+        res_1 = risk_scoring.probability_to_score(1.0, eps=1e-4)
+        self.assertTrue(np.isfinite(res_1.raw_score))
+        self.assertAlmostEqual(res_1.raw_score, 221.372, places=1)
+        self.assertEqual(res_1.display_score, 300)
+        self.assertTrue(res_1.is_clamped)
+
 
 # ---------------------------------------------------------------------------
 # Phase 03 Tests: Illustrative Model Risk Bands
@@ -1288,6 +1346,71 @@ class TestThresholdSensitivityAnalysis(unittest.TestCase):
         self.assertEqual(summary["threshold_analysis"]["data_partition"], "training_out_of_fold")
         self.assertEqual(summary["threshold_analysis"]["n_thresholds"], 19)
         self.assertIn("prevent leakage", summary["threshold_analysis"]["note"])
+
+    def test_invalid_thresholds_rejected(self):
+        """Thresholds outside [0, 1], non-numeric, or non-finite must raise ValueError or TypeError."""
+        y_true = np.array([0, 1])
+        probs = np.array([0.3, 0.7])
+
+        for invalid_t in [-0.01, 1.01, -1.0, 2.0, float("nan"), float("inf")]:
+            with self.subTest(invalid_t=invalid_t):
+                with self.assertRaises(ValueError):
+                    train.calculate_threshold_metrics(y_true, probs, threshold=invalid_t)
+
+        for invalid_type in ["0.5", True, False]:
+            with self.subTest(invalid_type=invalid_type):
+                with self.assertRaises(TypeError):
+                    train.calculate_threshold_metrics(y_true, probs, threshold=invalid_type)
+
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, probs, thresholds=[])
+
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, probs, thresholds=[-0.1, 0.5])
+
+    def test_invalid_labels_rejected(self):
+        """Labels must be 1D, non-empty, and strictly binary {0, 1} without silent coercion."""
+        probs = np.array([0.4, 0.6])
+
+        # Non-binary labels
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(np.array([0, 2]), probs, threshold=0.5)
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(np.array([0.7, 1.0]), probs, threshold=0.5)
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(np.array([-1, 1]), probs, threshold=0.5)
+
+        # Empty array
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(np.array([]), np.array([]), threshold=0.5)
+
+        # Array with NaN
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(np.array([0, np.nan]), probs, threshold=0.5)
+
+    def test_invalid_probabilities_rejected(self):
+        """Probabilities must be 1D, non-empty, finite, and in [0.0, 1.0] matching y_true length."""
+        y_true = np.array([0, 1])
+
+        # Out of bounds
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, np.array([-0.05, 0.8]), threshold=0.5)
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, np.array([0.2, 1.05]), threshold=0.5)
+
+        # NaN / Inf
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, np.array([np.nan, 0.5]), threshold=0.5)
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, np.array([np.inf, 0.5]), threshold=0.5)
+
+        # Length mismatch
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, np.array([0.5]), threshold=0.5)
+
+        # 2D array
+        with self.assertRaises(ValueError):
+            train.calculate_threshold_metrics(y_true, np.array([[0.5, 0.5]]), threshold=0.5)
 
 
 # ---------------------------------------------------------------------------
@@ -1498,6 +1621,55 @@ class TestPhase03CLISmoke(unittest.TestCase):
         self.assertIn("Illustrative Credit Score:", res.stdout)
         self.assertIn("Illustrative Risk Band:", res.stdout)
         self.assertIn("Local Feature Contributions", res.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Phase 03.1 Tests: Documentation & Specification Consistency
+# ---------------------------------------------------------------------------
+
+class TestDocumentationConsistency(unittest.TestCase):
+    """Verify that MODEL_CARD.md and experiment_summary.md match code contracts."""
+
+    def test_model_card_feature_bounds_match_domain_bounds(self):
+        """MODEL_CARD.md must accurately document actual validator & generator ranges."""
+        model_card = (ROOT / "MODEL_CARD.md").read_text(encoding="utf-8")
+        expected_snippets = [
+            "`age_years`: integer $\\in [20, 65]$",
+            "`monthly_income_inr`: float $\\in [8000.0, 250000.0]$",
+            "`employment_tenure_years`: float $\\in [0.0, 35.0]$",
+            "`debt_to_income_ratio`: float $\\in [0.0, 1.2]$",
+            "`existing_loan_count`: integer $\\in [0, 8]$",
+            "`credit_utilization_ratio`: float $\\in [0.0, 1.25]$",
+            "`prior_delinquencies_24m`: integer $\\in [0, 5]$",
+            "`bureau_history_available`: binary $\\in \\{0, 1\\}$",
+            "`bureau_score`: float $\\in [300.0, 900.0]$",
+            "`utility_payment_timeliness`: float $\\in [0.05, 1.0]$",
+            "`rental_payment_timeliness`: float $\\in [0.05, 1.0]$",
+            "`digital_payment_regularity`: float $\\in [0.02, 1.0]$",
+            "`cashflow_stability_index`: float $\\in [0.02, 1.0]$",
+            "`alternative_history_months`: integer $\\in [0, 24]$",
+        ]
+        for snippet in expected_snippets:
+            self.assertIn(snippet, model_card)
+
+    def test_documentation_does_not_contain_incorrect_score_ranges(self):
+        """Risk bands must not contain the incorrect score ranges 552 or 510."""
+        model_card = (ROOT / "MODEL_CARD.md").read_text(encoding="utf-8")
+        exp_summary = (ROOT / "reports" / "experiment_summary.md").read_text(encoding="utf-8")
+
+        self.assertNotIn("552", model_card)
+        self.assertNotIn("510", model_card)
+        self.assertNotIn("score \\ge 552", exp_summary.lower())
+        self.assertNotIn("score < 510", exp_summary.lower())
+
+    def test_documentation_does_not_contain_unsupported_cost_or_adverse_claims(self):
+        """Documentation must not claim arbitrary cost ratios (4x-10x) or adverse action compliance."""
+        exp_summary = (ROOT / "reports" / "experiment_summary.md").read_text(encoding="utf-8")
+        self.assertNotIn("4x to 10x", exp_summary)
+        self.assertNotIn("4\\times to 10\\times", exp_summary)
+        self.assertNotIn("4× to 10×", exp_summary)
+        self.assertNotIn("satisfy interpretability and adverse-action transparency requirements", exp_summary)
+        self.assertNotIn("mathematical foundation for adverse-action notices", exp_summary)
 
 
 if __name__ == "__main__":

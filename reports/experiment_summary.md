@@ -108,9 +108,11 @@ $$\text{Score} = \text{Offset} + \text{Factor} \cdot \ln\left(\frac{1 - p}{p}\ri
 
 ### Illustrative Model Risk Bands
 These bands are illustrative engineering demonstrations and do **not** represent statutory or regulatory credit ratings:
-- **Lower model-estimated risk:** Modeled default probability $p < 0.10$ (Illustrative score $\ge 552$)
-- **Middle model-estimated risk:** Modeled default probability $0.10 \le p < 0.20$ (Illustrative score $510 \le \text{score} < 552$)
-- **Higher model-estimated risk:** Modeled default probability $p \ge 0.20$ (Illustrative score $< 510$)
+- **Lower model-estimated risk:** Modeled default probability $p < 0.10$
+- **Middle model-estimated risk:** Modeled default probability $0.10 \le p < 0.20$
+- **Higher model-estimated risk:** Modeled default probability $p \ge 0.20$
+
+The illustrative credit score is a monotonic, bounded, and rounded transformation of modeled default probability (continuous raw scores at $p=0.10$ and $p=0.20$ evaluate to $\approx 550.52$ and $\approx 527.12$, respectively). Because display scores are subject to integer rounding and clamping to $[300, 850]$, scores should not be substituted for the continuous probability-band boundaries.
 
 ---
 
@@ -146,19 +148,19 @@ The table below summarizes performance across five representative decision thres
 
 Full metrics across all 19 thresholds are exported in `reports/threshold_analysis.csv` and visualized in `reports/threshold_analysis.png`.
 
-### Decision Threshold Trade-Offs & Business Cost Matrices
-No single decision threshold is universally optimal in credit underwriting:
-- **Low Thresholds ($\tau \approx 0.10$):** Maximize default detection (Recall $> 94\%$), minimizing costly credit defaults (False Negatives). However, False Positive Rates are elevated ($25\% - 68\%$), rejecting many creditworthy borrowers and forfeiting net interest margin.
-- **High Thresholds ($\tau \approx 0.50$):** Maximize precision ($65\% - 76\%$) and borrower acceptance, minimizing rejected good borrowers. However, False Negative Rates climb ($33\% - 61\%$), admitting severe default risk onto the loan balance sheet.
-- **Optimal Cutoff Selection:** In commercial deployment, the threshold must be chosen by minimizing expected financial loss under an asymmetric cost matrix:
-  $$\text{Expected Loss} = C_{\text{FN}} \cdot \text{FN} + C_{\text{FP}} \cdot \text{FP} - \text{Margin}_{\text{TN}} \cdot \text{TN}$$
-  where the cost of a credit default ($C_{\text{FN}}$) is typically $4\times$ to $10\times$ larger than the opportunity cost of rejecting an applicant ($C_{\text{FP}}$).
+### Decision Threshold Trade-Offs & Classification Behavior
+Threshold effects are evaluated purely as mathematical classification behavior on synthetic data, not as a validated lending policy:
+- **Lower classification thresholds ($\tau \approx 0.10$):** Generally identify more synthetic defaults ($\text{Recall} > 94\%$), while also increasing false positives ($\text{FPR} = 36\% - 69\%$).
+- **Higher classification thresholds ($\tau \approx 0.50$):** Reduce false positives ($\text{FPR} = 7\% - 8\%$), but miss a substantial portion of synthetic defaults ($\text{FNR} = 34\% - 62\%$).
+- **Absence of Cost-Optimal Threshold:** Without empirical, institution-specific business-cost inputs and validated risk preferences, no cost-optimal classification threshold can be identified. In real-world credit risk operations, a threshold is chosen to minimize expected loss under an explicit cost matrix:
+  $$\text{Expected Loss} = C_{\text{FN}} \cdot \text{FN} + C_{\text{FP}} \cdot \text{FP}$$
+  where $C_{\text{FN}}$ (the financial cost associated with an undetected default) and $C_{\text{FP}}$ (the cost or lost margin associated with an incorrectly flagged applicant) are unknown institutional parameters. The synthetic threshold analysis presented here illustrates model classification mechanics across thresholds; it does not recommend an approval, rejection, or credit policy cutoff.
 
 ---
 
 ## 7. Exact additive local feature explanations (Hybrid Logistic Regression)
 
-To satisfy interpretability and adverse-action transparency requirements, local predictions from the hybrid linear model are decomposed exactly into additive feature contributions.
+For the hybrid Logistic Regression model, local predictions are decomposed into exact additive feature contributions in transformed-feature/log-odds space:
 
 ### Additive Log-Odds Decomposition
 For an applicant's preprocessed feature vector $\mathbf{x}' \in \mathbb{R}^M$, the model's log-odds decision function is an exact linear combination of the model coefficients $\boldsymbol{\beta}$ and intercept $\beta_0$:
@@ -169,9 +171,10 @@ $$\text{Reconstructed Log-Odds} = \beta_0 + \sum_{j=1}^M \text{contribution}_j$$
 ### Properties & Verification
 - **Numerical Reconstruction:** Tested across multiple applicants, the difference $|\text{Reconstructed} - \text{decision\_function}|$ is smaller than $10^{-14}$ (exact machine precision, well within the $10^{-5}$ tolerance).
 - **Directional Interpretation:**
-  - $\text{contribution}_j > 0$: Increases modeled log-odds of default (elevates default risk; decreases illustrative credit score).
-  - $\text{contribution}_j < 0$: Decreases modeled log-odds of default (lowers default risk; increases illustrative credit score).
-- **Adverse-Action Factors:** Sorting positive contributions in descending order identifies the top drivers elevating an applicant's default risk (e.g., past delinquencies, high debt-to-income ratio), providing the mathematical foundation for adverse-action notices.
+  - $\text{contribution}_j > 0$: Increases the model's log-odds of synthetic default (elevates default risk; decreases illustrative credit score).
+  - $\text{contribution}_j < 0$: Decreases the model's log-odds of synthetic default (lowers default risk; increases illustrative credit score).
+- **Model Mechanics vs. Causality:** These values represent the fitted linear model's mathematical behavior on normalized, imputed inputs, not causal effects.
+- **Educational Scope:** These decompositions provide mathematical transparency into how the linear model formed its output on synthetic applicant data. They are educational explanations and do not constitute legally sufficient adverse-action reason codes or proof of regulatory compliance under credit regulations (e.g., US FCRA/ECOA or Indian DPDP/RBI guidelines).
 
 ---
 
