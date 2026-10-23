@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 175 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, and bootstrap uncertainty analysis:
+The test suite contains 195 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, and controlled input stress testing:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -127,6 +127,16 @@ python uncertainty_analysis.py --n-bootstrap 1000 --seed 2027 --confidence-level
 ```
 
 Deliverables are generated into `reports/uncertainty/`.
+
+### H. (Optional) Run Controlled Input-Degradation Stress Testing
+
+To evaluate model sensitivity under controlled missingness (MCAR dropout) and bounded measurement noise across 35 scenarios:
+
+```bash
+python stress_testing.py --seed 2028
+```
+
+Deliverables are generated into `reports/stress_testing/`.
 
 ---
 
@@ -197,10 +207,48 @@ To quantify sampling variability around the fixed fitted models without retraini
   - `bootstrap_uncertainty_report.md`: Detailed audit report with programmatic tables and methodology notes.
   - `run_metadata.json`: Machine-readable metadata with runtime dependency versions and configuration.
 
+---
+
+## 6. Controlled Input-Degradation Stress Testing & Sensitivity Analysis
+
+To investigate how sensitive the fitted models are to degradation in alternative-data inputs, a controlled stress-testing experiment is implemented in `stress_testing.py`:
+
+- **Research Objectives:**
+  1. *Source-Data Dropout:* How severely does simultaneous loss of alternative-data streams degrade hybrid model discrimination and calibration?
+  2. *Single-Feature Sensitivity:* Which individual alternative features produce the steepest performance drop when subjected to missingness?
+  3. *Measurement Noise Resilience:* How do models respond to bounded zero-mean Gaussian measurement noise scaled to documented synthetic domain ranges?
+  4. *Negative Control Verification:* Does the traditional baseline remain unaffected when only alternative inputs are corrupted?
+- **Protocol & Invariant Controls:**
+  - Evaluates the fixed held-out test split of 2,000 records (stratified split seed `2026`, test size `0.20`).
+  - No retraining, no threshold tuning, and no label modification: ground-truth target labels are strictly preserved to isolate input sensitivity on fixed records.
+  - Evaluates **35 total scenarios** across **3 models** and **7 metrics** (735 total evaluations).
+  - Preprocessing pipelines handle permitted missingness via median imputation and missingness indicators without hardcoded business defaults.
+- **Summary of Scenario Families:**
+  1. *Clean Reference (1 scenario):* Uncorrupted test data baseline (reproduces Phase 07 held-out point estimates).
+  2. *Joint MCAR Missingness (4 scenarios):* Additional missing-at-random dropout applied simultaneously across all 5 alternative features at rates of 25%, 50%, 75%, and 100% using a shared row mask.
+  3. *Individual MCAR Missingness (15 scenarios):* Single-feature dropout across each of the 5 alternative features independently at 25%, 50%, and 100%.
+  4. *Bounded Continuous Measurement Noise (12 scenarios):* Zero-mean Gaussian noise with std = 5%, 10%, and 20% of synthetic domain range for `utility_payment_timeliness`, `rental_payment_timeliness`, `digital_payment_regularity`, and `cashflow_stability_index`, clipped to support bounds.
+  5. *Ordinal Measurement Noise (3 scenarios):* Gaussian noise with std = 1, 3, and 6 months for `alternative_history_months`, clipped to $[0, 24]$ and rounded to valid integers.
+- **Direction-Adjusted Degradation:**
+  - For higher-is-better metrics (ROC-AUC, Gini, KS, Avg Precision): $\text{Degradation} = \text{Metric}_{\text{clean}} - \text{Metric}_{\text{scenario}}$.
+  - For lower-is-better metrics (Brier score, Log loss, ECE): $\text{Degradation} = \text{Metric}_{\text{scenario}} - \text{Metric}_{\text{clean}}$.
+  - **Positive degradation indicates worse performance; negative indicates apparent improvement.**
+- **Key Empirical Observations:**
+  - *Traditional Baseline Invariance:* In all 35 scenarios, the traditional model's metrics and predictions remained completely unchanged ($\Delta = 0.0000$), serving as a negative control confirming that degradations in hybrid models stem exclusively from alternative-data dependencies.
+  - *Graceful Fallback Under Total Loss:* Complete dropout of all alternative features (`joint_missingness_rate_1.00`) produced the largest degradation (Hybrid HGB ROC-AUC drops from 0.9063 to 0.7682; Hybrid LR drops from 0.9098 to 0.7820). Both hybrid pipelines fall back gracefully to traditional baseline performance levels (~0.8071) via median imputation.
+  - *Bounded Noise Impact:* Continuous measurement noise up to 20% range reduced ROC-AUC by less than 0.02 across all single-feature scenarios. Cashflow stability and rental timeliness were the most noise-sensitive continuous signals.
+  - *Apparent Inverted Deltas:* In 23 of 735 evaluations (3.1%), degradation was slightly negative (e.g. ECE improving by ~0.004) due to median imputation shrinking extreme predicted probabilities toward central tendency, which mitigates overconfidence in calibration bins.
+- **Synthetic Data & Governance Disclaimer:**
+  This is a label-preserving input-corruption engineering test on synthetic records. It does **not** simulate coherent real-world population drift, borrower behavioral changes, or macroeconomic stress. It does not establish real-world model robustness, fairness, or creditworthiness.
+- **Deliverables (`reports/stress_testing/`):**
+  - `scenario_metrics.csv`: 735 evaluation rows recording metric values, sample counts, mean probabilities, and absolute probability change summaries.
+  - `scenario_deltas.csv`: 735 comparison rows recording clean reference metrics, scenario metrics, raw deltas, and direction-adjusted degradation.
+  - `stress_test_metadata.json`: Machine-readable metadata with split parameters, scenario definitions, seeds, feature bounds, and runtime dependency versions.
+  - `stress_test_report.md`: Comprehensive audit report with methodology, scenario matrix, model-by-model findings, largest degradations, and limitation notices.
 
 ---
 
-## 6. Feature Groups & Supported Domain Bounds
+## 7. Feature Groups & Supported Domain Bounds
 
 The operational boundaries below reflect the synthetic generator distribution and the input validation contract in `validation.py`. They are **model support bounds for this synthetic benchmark**, not universal borrower limits or statutory lending rules:
 
@@ -223,7 +271,7 @@ The operational boundaries below reflect the synthetic generator distribution an
 
 ---
 
-## 7. Model Outputs & Mathematical Methodology
+## 8. Model Outputs & Mathematical Methodology
 
 ### A. Estimated Default Probability ($p$)
 The hybrid Logistic Regression model outputs an estimated probability of default within 12 months ($p \in [0, 1]$). Because this model was trained on simulated data, $p$ reflects synthetic patterns, not true borrower risk.
@@ -251,7 +299,7 @@ $$\text{logit}(p) = \text{intercept} + \sum_{j=1}^M (\text{coef}_j \cdot x'_j)$$
 
 ---
 
-## 8. Repository Architecture
+## 9. Repository Architecture
 
 ```
 alternative-credit-scoring/
@@ -269,6 +317,7 @@ alternative-credit-scoring/
 │   └── traditional_baseline.joblib
 ├── reports/
 │   ├── ablation_robustness/     # Multi-seed ablation metrics, deltas, plot, and report
+│   ├── stress_testing/          # Controlled input-degradation stress test metrics, deltas, metadata, and report
 │   ├── uncertainty/             # Bootstrap model & paired comparison intervals, report, metadata
 │   ├── calibration_curves.png
 │   ├── metric_comparison.png
@@ -278,9 +327,10 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 175 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 195 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
 ├── predict.py                   # Command-line prediction and explanation demo
+├── stress_testing.py            # Controlled input-degradation stress testing & sensitivity analysis
 ├── train.py                     # Synthetic data generation and model training pipeline
 ├── uncertainty_analysis.py      # Bootstrap uncertainty quantification & paired model comparison
 ├── validation.py                # Schema contracts and domain boundary validation
@@ -295,7 +345,7 @@ alternative-credit-scoring/
 
 ---
 
-## 9. Limitations & Governance Notice
+## 10. Limitations & Governance Notice
 
 1. **Simulation Benchmark Only:** Features and target outcomes are artificially constructed by mathematical formulas.
 2. **No Real Lending Authority:** Outputs must not be used to approve, reject, price, or rank real applicants.

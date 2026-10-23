@@ -71,6 +71,7 @@ import risk_scoring  # noqa: E402
 import inference_helper  # noqa: E402
 import experiments.alternative_feature_ablation as ablation_exp  # noqa: E402
 import uncertainty_analysis  # noqa: E402
+import stress_testing  # noqa: E402
 
 
 
@@ -3016,6 +3017,330 @@ class TestBootstrapUncertaintyAnalysis(unittest.TestCase):
                     n_bootstrap=5,
                     seed=2027,
                 )
+
+
+# ---------------------------------------------------------------------------
+# Phase 08: Controlled Input-Degradation Stress Testing & Sensitivity Analysis
+# ---------------------------------------------------------------------------
+
+class TestStressTestingSensitivityAnalysis(unittest.TestCase):
+    """Automated tests for Phase 08 input-degradation stress testing and sensitivity analysis."""
+
+    @classmethod
+    def setUpClass(cls):
+        df = pd.read_csv(stress_testing.DATA_PATH)
+        from sklearn.model_selection import train_test_split
+        train_df, test_df = train_test_split(
+            df,
+            test_size=stress_testing.DEFAULT_TEST_SIZE,
+            random_state=stress_testing.DEFAULT_SPLIT_SEED,
+            stratify=df[stress_testing.TARGET],
+        )
+        cls.test_df = test_df
+        cls.y_test = test_df[stress_testing.TARGET].to_numpy()
+
+        # Run one deterministic execution of the experiment for fast verification
+        cls.metrics_df, cls.deltas_df, cls.metadata, cls.report = (
+            stress_testing.run_stress_testing_experiment(
+                base_seed=2028,
+                execution_timestamp="2026-01-01T00:00:00+00:00",
+            )
+        )
+
+    def test_scenario_definitions_count_and_composition(self):
+        """All expected 35 scenario definitions are produced with correct families and counts."""
+        scenarios = stress_testing.build_scenario_definitions()
+        self.assertEqual(len(scenarios), 35)
+
+        families = [s["scenario_family"] for s in scenarios]
+        self.assertEqual(families.count("clean_reference"), 1)
+        self.assertEqual(families.count("joint_missingness"), 4)
+        self.assertEqual(families.count("individual_missingness"), 15)
+        self.assertEqual(families.count("measurement_noise"), 15)
+
+        # All 5 alternative features represented in individual missingness
+        ind_features = {s["perturbed_feature"] for s in scenarios if s["scenario_family"] == "individual_missingness"}
+        self.assertEqual(ind_features, set(stress_testing.ALTERNATIVE_FEATURES))
+
+        # 4 continuous features in continuous noise (3 levels each)
+        cont_features = {
+            s["perturbed_feature"]
+            for s in scenarios
+            if s["scenario_type"] == "measurement_noise_continuous"
+        }
+        self.assertEqual(cont_features, set(stress_testing.CONTINUOUS_ALTERNATIVE_FEATURES))
+
+        # alternative_history_months in ordinal noise (3 levels)
+        ord_features = [
+            s for s in scenarios if s["scenario_type"] == "measurement_noise_ordinal"
+        ]
+        self.assertEqual(len(ord_features), 3)
+        self.assertEqual({s["configured_intensity"] for s in ord_features}, {1.0, 3.0, 6.0})
+
+    def test_clean_baseline_unchanged_and_matches_phase_07(self):
+        """Clean baseline data and predictions must be unchanged and match Phase 07 values."""
+        clean_def = {
+            "scenario_id": "clean_reference",
+            "scenario_family": "clean_reference",
+            "scenario_type": "clean",
+            "scenario_description": "Clean reference",
+            "perturbed_feature": "none",
+            "configured_intensity": 0.0,
+        }
+        df_clean_gen, meta = stress_testing.generate_scenario_data(self.test_df, clean_def, scenario_seed=2028)
+        pd.testing.assert_frame_equal(df_clean_gen, self.test_df)
+        self.assertEqual(meta["effective_additional_rate"], 0.0)
+
+        clean_metrics = self.metadata["clean_baseline_metrics"]
+        # Assert exact agreement with Phase 07 held-out baseline point estimates
+        self.assertAlmostEqual(clean_metrics["Traditional baseline"]["roc_auc"], 0.80709467, places=6)
+        self.assertAlmostEqual(clean_metrics["Hybrid (traditional + alternative)"]["roc_auc"], 0.90978432, places=6)
+        self.assertAlmostEqual(clean_metrics["Hybrid (HistGradientBoosting)"]["roc_auc"], 0.90632351, places=6)
+
+    def test_scenario_generation_deterministic_for_fixed_seeds(self):
+        """Scenario generation must be completely deterministic for identical seeds and differ for different seeds."""
+        sc_def = {
+            "scenario_id": "joint_test",
+            "scenario_family": "joint_missingness",
+            "scenario_type": "missingness_joint",
+            "scenario_description": "Joint 50%",
+            "perturbed_feature": "all_alternative",
+            "configured_intensity": 0.50,
+        }
+        df1, meta1 = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=12345)
+        df2, meta2 = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=12345)
+        df3, _ = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=54321)
+
+        pd.testing.assert_frame_equal(df1, df2)
+        self.assertEqual(meta1, meta2)
+        self.assertFalse(df1.equals(df3))
+
+    def test_source_dataframe_not_mutated(self):
+        """The source DataFrame must not be mutated in any scenario generation call."""
+        df_copy = self.test_df.copy(deep=True)
+        for sc_def in stress_testing.build_scenario_definitions()[:5]:
+            _ = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=999)
+        pd.testing.assert_frame_equal(self.test_df, df_copy)
+
+    def test_row_order_and_target_alignment_preserved(self):
+        """Original row order, indices, and alignment must be strictly preserved."""
+        for sc_def in stress_testing.build_scenario_definitions()[::7]:
+            df_sc, _ = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=100)
+            self.assertTrue(df_sc.index.equals(self.test_df.index))
+            self.assertEqual(len(df_sc), len(self.test_df))
+
+    def test_mcar_masks_independent_of_target_and_predictions(self):
+        """MCAR dropout selection must be purely random and independent of target values or predictions."""
+        sc_def = {
+            "scenario_id": "joint_test",
+            "scenario_family": "joint_missingness",
+            "scenario_type": "missingness_joint",
+            "scenario_description": "Joint 50%",
+            "perturbed_feature": "all_alternative",
+            "configured_intensity": 0.50,
+        }
+        df_sc, _ = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=42)
+        degraded_mask = df_sc["utility_payment_timeliness"].isna() & self.test_df["utility_payment_timeliness"].notna()
+
+        # The proportion of positives among degraded rows should be close to test set base rate (~27.5%)
+        positive_rate_degraded = self.y_test[degraded_mask].mean()
+        overall_positive_rate = self.y_test.mean()
+        self.assertAlmostEqual(positive_rate_degraded, overall_positive_rate, delta=0.08)
+
+    def test_preexisting_missingness_preserved_and_effective_rates_accurate(self):
+        """Pre-existing missingness must remain NaN and observed rates must reflect total missingness."""
+        sc_def = {
+            "scenario_id": "ind_missing_util",
+            "scenario_family": "individual_missingness",
+            "scenario_type": "missingness_individual",
+            "scenario_description": "Util 25%",
+            "perturbed_feature": "utility_payment_timeliness",
+            "configured_intensity": 0.25,
+        }
+        df_sc, meta = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=77)
+        preexisting_nans = self.test_df["utility_payment_timeliness"].isna()
+        self.assertTrue(df_sc.loc[preexisting_nans, "utility_payment_timeliness"].isna().all())
+
+        # Effective additional rate was 250 / 2000 = 0.125
+        self.assertEqual(meta["effective_additional_rate"], 0.25)
+        # Observed rate reflects pre-existing ~7% plus additional ~25%
+        self.assertAlmostEqual(
+            meta["observed_missingness_rates"]["utility_payment_timeliness"],
+            df_sc["utility_payment_timeliness"].isna().mean(),
+        )
+
+    def test_joint_dropout_applies_same_row_mask_across_all_alternative_features(self):
+        """Joint dropout must apply the exact same row degradation mask to all 5 alternative features."""
+        sc_def = {
+            "scenario_id": "joint_50",
+            "scenario_family": "joint_missingness",
+            "scenario_type": "missingness_joint",
+            "scenario_description": "Joint 50%",
+            "perturbed_feature": "all_alternative",
+            "configured_intensity": 0.50,
+        }
+        df_sc, meta = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=88)
+
+        # In alternative_history_months, which had 0 pre-existing missingness, missing rows show the exact mask:
+        selected_mask = df_sc["alternative_history_months"].isna()
+        self.assertEqual(selected_mask.sum(), meta["rows_selected_for_degradation"])
+
+        # Every other alternative feature must be NaN on that exact mask:
+        for alt_col in stress_testing.ALTERNATIVE_FEATURES:
+            self.assertTrue(df_sc.loc[selected_mask, alt_col].isna().all())
+
+    def test_individual_dropout_does_not_alter_other_columns(self):
+        """Single-feature dropout must not alter any other predictor columns."""
+        sc_def = {
+            "scenario_id": "ind_missing_rental",
+            "scenario_family": "individual_missingness",
+            "scenario_type": "missingness_individual",
+            "scenario_description": "Rental 50%",
+            "perturbed_feature": "rental_payment_timeliness",
+            "configured_intensity": 0.50,
+        }
+        df_sc, _ = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=99)
+        other_features = [c for c in validation.ALL_FEATURES if c != "rental_payment_timeliness"]
+        pd.testing.assert_frame_equal(df_sc[other_features], self.test_df[other_features])
+
+    def test_measurement_noise_preserves_nans(self):
+        """Additive measurement noise must never perturb existing NaN values."""
+        sc_def = {
+            "scenario_id": "noise_rental",
+            "scenario_family": "measurement_noise",
+            "scenario_type": "measurement_noise_continuous",
+            "scenario_description": "Rental noise 20%",
+            "perturbed_feature": "rental_payment_timeliness",
+            "configured_intensity": 0.20,
+        }
+        df_sc, _ = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=111)
+        clean_nan_mask = self.test_df["rental_payment_timeliness"].isna()
+        scenario_nan_mask = df_sc["rental_payment_timeliness"].isna()
+        self.assertTrue(clean_nan_mask.equals(scenario_nan_mask))
+
+    def test_continuous_features_respect_domain_bounds(self):
+        """Continuous features perturbed by noise must strictly respect synthetic domain bounds."""
+        for feat in stress_testing.CONTINUOUS_ALTERNATIVE_FEATURES:
+            sc_def = {
+                "scenario_id": f"noise_{feat}_test",
+                "scenario_family": "measurement_noise",
+                "scenario_type": "measurement_noise_continuous",
+                "scenario_description": f"{feat} noise 20%",
+                "perturbed_feature": feat,
+                "configured_intensity": 0.20,
+            }
+            df_sc, meta = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=222)
+            vals = df_sc[feat].dropna().to_numpy()
+            dmin = validation.DOMAIN_BOUNDS[feat]["min"]
+            dmax = validation.DOMAIN_BOUNDS[feat]["max"]
+            self.assertTrue(np.all(vals >= dmin))
+            self.assertTrue(np.all(vals <= dmax))
+            self.assertGreater(meta["pct_clipped"], 0.0)
+
+    def test_alternative_history_months_remains_valid_bounded_integer(self):
+        """alternative_history_months after ordinal noise must be integers bounded in [0, 24]."""
+        sc_def = {
+            "scenario_id": "noise_alt_months",
+            "scenario_family": "measurement_noise",
+            "scenario_type": "measurement_noise_ordinal",
+            "scenario_description": "Alt months noise 6m",
+            "perturbed_feature": "alternative_history_months",
+            "configured_intensity": 6.0,
+        }
+        df_sc, meta = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=333)
+        vals = df_sc["alternative_history_months"].dropna().to_numpy()
+        self.assertTrue(np.all(vals >= 0))
+        self.assertTrue(np.all(vals <= 24))
+        self.assertTrue(np.all(np.isclose(vals, np.round(vals))))
+        self.assertGreater(meta["pct_clipped"], 0.0)
+
+    def test_each_scenario_passes_inference_validation_contract(self):
+        """Every generated scenario DataFrame must pass validate_feature_frame without errors."""
+        for sc_def in stress_testing.build_scenario_definitions():
+            df_sc, _ = stress_testing.generate_scenario_data(self.test_df, sc_def, scenario_seed=444)
+            validation.validate_feature_frame(df_sc[validation.ALL_FEATURES])
+
+    def test_metrics_and_deltas_coverage_and_finiteness(self):
+        """Scenario metrics and deltas DataFrames must have 735 rows and all finite values."""
+        self.assertEqual(len(self.metrics_df), 735)
+        self.assertEqual(len(self.deltas_df), 735)
+
+        self.assertTrue(np.all(np.isfinite(self.metrics_df["metric_value"])))
+        self.assertTrue(np.all(np.isfinite(self.metrics_df["mean_abs_prob_delta"])))
+        self.assertTrue(np.all(np.isfinite(self.metrics_df["p95_abs_prob_delta"])))
+
+        self.assertTrue(np.all(np.isfinite(self.deltas_df["delta_vs_clean"])))
+        self.assertTrue(np.all(np.isfinite(self.deltas_df["direction_adjusted_degradation"])))
+
+    def test_direction_adjusted_degradation_calculation(self):
+        """Degradation calculation signs must correctly reflect metric optimization direction."""
+        calc = stress_testing.calculate_direction_adjusted_degradation
+        # Higher is better: clean 0.90, scenario 0.85 -> degradation +0.05 (worse)
+        self.assertAlmostEqual(calc(0.90, 0.85, "higher"), 0.05)
+        # Higher is better: clean 0.90, scenario 0.92 -> degradation -0.02 (improved)
+        self.assertAlmostEqual(calc(0.90, 0.92, "higher"), -0.02)
+
+        # Lower is better: clean 0.10, scenario 0.12 -> degradation +0.02 (worse)
+        self.assertAlmostEqual(calc(0.10, 0.12, "lower"), 0.02)
+        # Lower is better: clean 0.10, scenario 0.08 -> degradation -0.02 (improved)
+        self.assertAlmostEqual(calc(0.10, 0.08, "lower"), -0.02)
+
+        with self.assertRaises(ValueError):
+            calc(0.5, 0.5, "invalid_direction")
+
+    def test_traditional_baseline_negative_control(self):
+        """Traditional baseline must have 0.0 delta and 0.0 probability shift across all 35 scenarios."""
+        trad_deltas = self.deltas_df[self.deltas_df["model_name"] == "Traditional baseline"]
+        self.assertEqual(len(trad_deltas), 35 * 7)
+        self.assertTrue((trad_deltas["delta_vs_clean"] == 0.0).all())
+        self.assertTrue((trad_deltas["direction_adjusted_degradation"] == 0.0).all())
+        self.assertTrue((trad_deltas["mean_abs_prob_delta"] == 0.0).all())
+        self.assertTrue((trad_deltas["p95_abs_prob_delta"] == 0.0).all())
+
+    def test_argument_validation_and_missing_files(self):
+        """CLI arguments and input file paths must be rigorously validated."""
+        val_args = stress_testing.validate_arguments
+        with self.assertRaises(ValueError):
+            val_args(seed=-1)
+        with self.assertRaises(ValueError):
+            val_args(seed=True)
+        with self.assertRaises(ValueError):
+            val_args(seed=2028, test_size=0.0)
+        with self.assertRaises(ValueError):
+            val_args(seed=2028, test_size=1.0)
+        with self.assertRaises(ValueError):
+            val_args(seed=2028, test_size=float("nan"))
+        with self.assertRaises(ValueError):
+            val_args(seed=2028, split_seed=-5)
+
+        with self.assertRaises(FileNotFoundError):
+            stress_testing.run_stress_testing_experiment(data_path=Path("non_existent_data.csv"))
+
+        with self.assertRaises(FileNotFoundError):
+            fake_paths = {"Bad Model": Path("non_existent_model.joblib")}
+            stress_testing.run_stress_testing_experiment(model_paths=fake_paths)
+
+    def test_synthetic_use_limitations_in_report(self):
+        """The generated audit report must contain prominent educational and synthetic use disclaimers."""
+        self.assertIn("SYNTHETIC AND EDUCATIONAL PURPOSE ONLY", self.report)
+        self.assertIn("Label-Preserving Input Corruption", self.report)
+        self.assertIn("Negative Control", self.report)
+
+    def test_repeated_execution_reproducibility(self):
+        """Repeated execution with identical configuration must yield byte-identical outputs."""
+        m2, d2, meta2, rep2 = stress_testing.run_stress_testing_experiment(
+            base_seed=2028,
+            execution_timestamp="2026-01-01T00:00:00+00:00",
+        )
+        pd.testing.assert_frame_equal(self.metrics_df, m2)
+        pd.testing.assert_frame_equal(self.deltas_df, d2)
+        self.assertEqual(self.metadata, meta2)
+        self.assertEqual(self.report, rep2)
+
+    def test_cli_execution_smoke(self):
+        """CLI main entrypoint must execute cleanly and return exit code 0."""
+        ret = stress_testing.main(["--seed", "2028"])
+        self.assertEqual(ret, 0)
 
 
 if __name__ == "__main__":

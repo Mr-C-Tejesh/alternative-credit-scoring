@@ -1,0 +1,954 @@
+{
+  "generated_at_utc": "2026-10-23T21:03:38.768798+00:00",
+  "dataset_settings": {
+    "data_path": "/Users/tejesh/Coding/Projects/alternative_credit_scoring/data/synthetic_applicants.csv",
+    "n_total_records": 10000,
+    "test_fraction": 0.2,
+    "split_seed": 2026,
+    "target_column": "default_within_12_months",
+    "n_test_samples": 2000,
+    "n_test_positives": 550,
+    "n_test_negatives": 1450
+  },
+  "experiment_configuration": {
+    "base_seed": 2028,
+    "n_scenarios": 35,
+    "scenario_counts_by_family": {
+      "clean_reference": 1,
+      "joint_missingness": 4,
+      "individual_missingness": 15,
+      "measurement_noise": 15
+    },
+    "models_evaluated": [
+      "Traditional baseline",
+      "Hybrid (traditional + alternative)",
+      "Hybrid (HistGradientBoosting)"
+    ],
+    "metrics_evaluated": [
+      "roc_auc",
+      "gini_coefficient",
+      "ks_statistic",
+      "average_precision",
+      "brier_score",
+      "log_loss",
+      "ece_10_bins"
+    ],
+    "n_bins_ece": 10
+  },
+  "metric_definitions": {
+    "roc_auc": {
+      "direction": "higher",
+      "higher_is_better": true
+    },
+    "gini_coefficient": {
+      "direction": "higher",
+      "higher_is_better": true
+    },
+    "ks_statistic": {
+      "direction": "higher",
+      "higher_is_better": true
+    },
+    "average_precision": {
+      "direction": "higher",
+      "higher_is_better": true
+    },
+    "brier_score": {
+      "direction": "lower",
+      "higher_is_better": false
+    },
+    "log_loss": {
+      "direction": "lower",
+      "higher_is_better": false
+    },
+    "ece_10_bins": {
+      "direction": "lower",
+      "higher_is_better": false
+    }
+  },
+  "feature_bounds": {
+    "utility_payment_timeliness": {
+      "min": 0.05,
+      "max": 1.0,
+      "range": 0.95,
+      "integer_only": false
+    },
+    "rental_payment_timeliness": {
+      "min": 0.05,
+      "max": 1.0,
+      "range": 0.95,
+      "integer_only": false
+    },
+    "digital_payment_regularity": {
+      "min": 0.02,
+      "max": 1.0,
+      "range": 0.98,
+      "integer_only": false
+    },
+    "cashflow_stability_index": {
+      "min": 0.02,
+      "max": 1.0,
+      "range": 0.98,
+      "integer_only": false
+    },
+    "alternative_history_months": {
+      "min": 0,
+      "max": 24,
+      "range": 24.0,
+      "integer_only": true
+    }
+  },
+  "environment_versions": {
+    "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "numpy_version": "2.5.4",
+    "pandas_version": "3.0.6",
+    "scikit_learn_version": "1.7.2",
+    "matplotlib_version": "3.11.2"
+  },
+  "clean_baseline_metrics": {
+    "Traditional baseline": {
+      "roc_auc": 0.807094670846395,
+      "gini_coefficient": 0.6141893416927899,
+      "ks_statistic": 0.45686520376175543,
+      "average_precision": 0.6099603749136585,
+      "brier_score": 0.1518748774953673,
+      "log_loss": 0.4610431488205156,
+      "ece_10_bins": 0.02115583784508166
+    },
+    "Hybrid (traditional + alternative)": {
+      "roc_auc": 0.9097843260188088,
+      "gini_coefficient": 0.8195686520376175,
+      "ks_statistic": 0.6667084639498433,
+      "average_precision": 0.8125609001516158,
+      "brier_score": 0.10334875727604928,
+      "log_loss": 0.329804240366135,
+      "ece_10_bins": 0.01105716506088341
+    },
+    "Hybrid (HistGradientBoosting)": {
+      "roc_auc": 0.9063235109717868,
+      "gini_coefficient": 0.8126470219435735,
+      "ks_statistic": 0.668025078369906,
+      "average_precision": 0.796765422056391,
+      "brier_score": 0.10603165082756276,
+      "log_loss": 0.33858652115740256,
+      "ece_10_bins": 0.01802926090546409
+    }
+  },
+  "summary_findings": {
+    "total_scenarios": 35,
+    "total_evaluations": 735,
+    "largest_degradations": [
+      {
+        "model_name": "Hybrid (HistGradientBoosting)",
+        "scenario_id": "joint_missingness_rate_1.00",
+        "metric": "gini_coefficient",
+        "clean_metric": 0.8126470219435735,
+        "scenario_metric": 0.536341065830721,
+        "delta_vs_clean": -0.27630595611285247,
+        "direction_adjusted_degradation": 0.27630595611285247
+      },
+      {
+        "model_name": "Hybrid (HistGradientBoosting)",
+        "scenario_id": "joint_missingness_rate_1.00",
+        "metric": "average_precision",
+        "clean_metric": 0.796765422056391,
+        "scenario_metric": 0.5322839821744377,
+        "delta_vs_clean": -0.2644814398819533,
+        "direction_adjusted_degradation": 0.2644814398819533
+      },
+      {
+        "model_name": "Hybrid (traditional + alternative)",
+        "scenario_id": "joint_missingness_rate_1.00",
+        "metric": "gini_coefficient",
+        "clean_metric": 0.8195686520376175,
+        "scenario_metric": 0.5640275862068966,
+        "delta_vs_clean": -0.2555410658307209,
+        "direction_adjusted_degradation": 0.2555410658307209
+      },
+      {
+        "model_name": "Hybrid (HistGradientBoosting)",
+        "scenario_id": "joint_missingness_rate_1.00",
+        "metric": "ks_statistic",
+        "clean_metric": 0.668025078369906,
+        "scenario_metric": 0.41517241379310343,
+        "delta_vs_clean": -0.25285266457680255,
+        "direction_adjusted_degradation": 0.25285266457680255
+      },
+      {
+        "model_name": "Hybrid (traditional + alternative)",
+        "scenario_id": "joint_missingness_rate_1.00",
+        "metric": "average_precision",
+        "clean_metric": 0.8125609001516158,
+        "scenario_metric": 0.5677019510973336,
+        "delta_vs_clean": -0.24485894905428218,
+        "direction_adjusted_degradation": 0.24485894905428218
+      },
+      {
+        "model_name": "Hybrid (traditional + alternative)",
+        "scenario_id": "joint_missingness_rate_1.00",
+        "metric": "ks_statistic",
+        "clean_metric": 0.6667084639498433,
+        "scenario_metric": 0.4436363636363636,
+        "delta_vs_clean": -0.22307210031347968,
+        "direction_adjusted_degradation": 0.22307210031347968
+      },
+      {
+        "model_name": "Hybrid (HistGradientBoosting)",
+        "scenario_id": "joint_missingness_rate_0.75",
+        "metric": "gini_coefficient",
+        "clean_metric": 0.8126470219435735,
+        "scenario_metric": 0.6405968652037615,
+        "delta_vs_clean": -0.17205015673981205,
+        "direction_adjusted_degradation": 0.17205015673981205
+      },
+      {
+        "model_name": "Hybrid (HistGradientBoosting)",
+        "scenario_id": "joint_missingness_rate_1.00",
+        "metric": "log_loss",
+        "clean_metric": 0.33858652115740256,
+        "scenario_metric": 0.5034193409650415,
+        "delta_vs_clean": 0.16483281980763892,
+        "direction_adjusted_degradation": 0.16483281980763892
+      },
+      {
+        "model_name": "Hybrid (HistGradientBoosting)",
+        "scenario_id": "joint_missingness_rate_0.75",
+        "metric": "ks_statistic",
+        "clean_metric": 0.668025078369906,
+        "scenario_metric": 0.5072100313479624,
+        "delta_vs_clean": -0.1608150470219436,
+        "direction_adjusted_degradation": 0.1608150470219436
+      },
+      {
+        "model_name": "Hybrid (HistGradientBoosting)",
+        "scenario_id": "joint_missingness_rate_0.75",
+        "metric": "average_precision",
+        "clean_metric": 0.796765422056391,
+        "scenario_metric": 0.6370213123203816,
+        "delta_vs_clean": -0.1597441097360094,
+        "direction_adjusted_degradation": 0.1597441097360094
+      }
+    ]
+  },
+  "scenarios": {
+    "clean_reference": {
+      "scenario_id": "clean_reference",
+      "scenario_family": "clean_reference",
+      "scenario_type": "clean",
+      "scenario_description": "Clean held-out test data reference baseline",
+      "perturbed_feature": "none",
+      "configured_intensity": 0.0,
+      "scenario_seed": 2028000,
+      "effective_additional_rate": 0.0,
+      "rows_selected_for_degradation": 0,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "joint_missingness_rate_0.25": {
+      "scenario_id": "joint_missingness_rate_0.25",
+      "scenario_family": "joint_missingness",
+      "scenario_type": "missingness_joint",
+      "scenario_description": "Simultaneous MCAR dropout across all 5 alternative features at 25% rate",
+      "perturbed_feature": "all_alternative",
+      "configured_intensity": 0.25,
+      "scenario_seed": 2028001,
+      "effective_additional_rate": 0.25,
+      "rows_selected_for_degradation": 500,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.3045,
+        "rental_payment_timeliness": 0.348,
+        "digital_payment_regularity": 0.2855,
+        "cashflow_stability_index": 0.3075,
+        "alternative_history_months": 0.25
+      }
+    },
+    "joint_missingness_rate_0.50": {
+      "scenario_id": "joint_missingness_rate_0.50",
+      "scenario_family": "joint_missingness",
+      "scenario_type": "missingness_joint",
+      "scenario_description": "Simultaneous MCAR dropout across all 5 alternative features at 50% rate",
+      "perturbed_feature": "all_alternative",
+      "configured_intensity": 0.5,
+      "scenario_seed": 2028002,
+      "effective_additional_rate": 0.5,
+      "rows_selected_for_degradation": 1000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.537,
+        "rental_payment_timeliness": 0.5655,
+        "digital_payment_regularity": 0.5215,
+        "cashflow_stability_index": 0.5315,
+        "alternative_history_months": 0.5
+      }
+    },
+    "joint_missingness_rate_0.75": {
+      "scenario_id": "joint_missingness_rate_0.75",
+      "scenario_family": "joint_missingness",
+      "scenario_type": "missingness_joint",
+      "scenario_description": "Simultaneous MCAR dropout across all 5 alternative features at 75% rate",
+      "perturbed_feature": "all_alternative",
+      "configured_intensity": 0.75,
+      "scenario_seed": 2028003,
+      "effective_additional_rate": 0.75,
+      "rows_selected_for_degradation": 1500,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.7645,
+        "rental_payment_timeliness": 0.7815,
+        "digital_payment_regularity": 0.7625,
+        "cashflow_stability_index": 0.764,
+        "alternative_history_months": 0.75
+      }
+    },
+    "joint_missingness_rate_1.00": {
+      "scenario_id": "joint_missingness_rate_1.00",
+      "scenario_family": "joint_missingness",
+      "scenario_type": "missingness_joint",
+      "scenario_description": "Simultaneous MCAR dropout across all 5 alternative features at 100% rate",
+      "perturbed_feature": "all_alternative",
+      "configured_intensity": 1.0,
+      "scenario_seed": 2028004,
+      "effective_additional_rate": 1.0,
+      "rows_selected_for_degradation": 2000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 1.0,
+        "rental_payment_timeliness": 1.0,
+        "digital_payment_regularity": 1.0,
+        "cashflow_stability_index": 1.0,
+        "alternative_history_months": 1.0
+      }
+    },
+    "missingness_utility_payment_timeliness_rate_0.25": {
+      "scenario_id": "missingness_utility_payment_timeliness_rate_0.25",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in utility_payment_timeliness at 25% rate",
+      "perturbed_feature": "utility_payment_timeliness",
+      "configured_intensity": 0.25,
+      "scenario_seed": 2028005,
+      "effective_additional_rate": 0.25,
+      "rows_selected_for_degradation": 500,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.299,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_utility_payment_timeliness_rate_0.50": {
+      "scenario_id": "missingness_utility_payment_timeliness_rate_0.50",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in utility_payment_timeliness at 50% rate",
+      "perturbed_feature": "utility_payment_timeliness",
+      "configured_intensity": 0.5,
+      "scenario_seed": 2028006,
+      "effective_additional_rate": 0.5,
+      "rows_selected_for_degradation": 1000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.533,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_utility_payment_timeliness_rate_1.00": {
+      "scenario_id": "missingness_utility_payment_timeliness_rate_1.00",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in utility_payment_timeliness at 100% rate",
+      "perturbed_feature": "utility_payment_timeliness",
+      "configured_intensity": 1.0,
+      "scenario_seed": 2028007,
+      "effective_additional_rate": 1.0,
+      "rows_selected_for_degradation": 2000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 1.0,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_rental_payment_timeliness_rate_0.25": {
+      "scenario_id": "missingness_rental_payment_timeliness_rate_0.25",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in rental_payment_timeliness at 25% rate",
+      "perturbed_feature": "rental_payment_timeliness",
+      "configured_intensity": 0.25,
+      "scenario_seed": 2028008,
+      "effective_additional_rate": 0.25,
+      "rows_selected_for_degradation": 500,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.3485,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_rental_payment_timeliness_rate_0.50": {
+      "scenario_id": "missingness_rental_payment_timeliness_rate_0.50",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in rental_payment_timeliness at 50% rate",
+      "perturbed_feature": "rental_payment_timeliness",
+      "configured_intensity": 0.5,
+      "scenario_seed": 2028009,
+      "effective_additional_rate": 0.5,
+      "rows_selected_for_degradation": 1000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.559,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_rental_payment_timeliness_rate_1.00": {
+      "scenario_id": "missingness_rental_payment_timeliness_rate_1.00",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in rental_payment_timeliness at 100% rate",
+      "perturbed_feature": "rental_payment_timeliness",
+      "configured_intensity": 1.0,
+      "scenario_seed": 2028010,
+      "effective_additional_rate": 1.0,
+      "rows_selected_for_degradation": 2000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 1.0,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_digital_payment_regularity_rate_0.25": {
+      "scenario_id": "missingness_digital_payment_regularity_rate_0.25",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in digital_payment_regularity at 25% rate",
+      "perturbed_feature": "digital_payment_regularity",
+      "configured_intensity": 0.25,
+      "scenario_seed": 2028011,
+      "effective_additional_rate": 0.25,
+      "rows_selected_for_degradation": 500,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.2855,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_digital_payment_regularity_rate_0.50": {
+      "scenario_id": "missingness_digital_payment_regularity_rate_0.50",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in digital_payment_regularity at 50% rate",
+      "perturbed_feature": "digital_payment_regularity",
+      "configured_intensity": 0.5,
+      "scenario_seed": 2028012,
+      "effective_additional_rate": 0.5,
+      "rows_selected_for_degradation": 1000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.5255,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_digital_payment_regularity_rate_1.00": {
+      "scenario_id": "missingness_digital_payment_regularity_rate_1.00",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in digital_payment_regularity at 100% rate",
+      "perturbed_feature": "digital_payment_regularity",
+      "configured_intensity": 1.0,
+      "scenario_seed": 2028013,
+      "effective_additional_rate": 1.0,
+      "rows_selected_for_degradation": 2000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 1.0,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_cashflow_stability_index_rate_0.25": {
+      "scenario_id": "missingness_cashflow_stability_index_rate_0.25",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in cashflow_stability_index at 25% rate",
+      "perturbed_feature": "cashflow_stability_index",
+      "configured_intensity": 0.25,
+      "scenario_seed": 2028014,
+      "effective_additional_rate": 0.25,
+      "rows_selected_for_degradation": 500,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.308,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_cashflow_stability_index_rate_0.50": {
+      "scenario_id": "missingness_cashflow_stability_index_rate_0.50",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in cashflow_stability_index at 50% rate",
+      "perturbed_feature": "cashflow_stability_index",
+      "configured_intensity": 0.5,
+      "scenario_seed": 2028015,
+      "effective_additional_rate": 0.5,
+      "rows_selected_for_degradation": 1000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.539,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_cashflow_stability_index_rate_1.00": {
+      "scenario_id": "missingness_cashflow_stability_index_rate_1.00",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in cashflow_stability_index at 100% rate",
+      "perturbed_feature": "cashflow_stability_index",
+      "configured_intensity": 1.0,
+      "scenario_seed": 2028016,
+      "effective_additional_rate": 1.0,
+      "rows_selected_for_degradation": 2000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 1.0,
+        "alternative_history_months": 0.0
+      }
+    },
+    "missingness_alternative_history_months_rate_0.25": {
+      "scenario_id": "missingness_alternative_history_months_rate_0.25",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in alternative_history_months at 25% rate",
+      "perturbed_feature": "alternative_history_months",
+      "configured_intensity": 0.25,
+      "scenario_seed": 2028017,
+      "effective_additional_rate": 0.25,
+      "rows_selected_for_degradation": 500,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.25
+      }
+    },
+    "missingness_alternative_history_months_rate_0.50": {
+      "scenario_id": "missingness_alternative_history_months_rate_0.50",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in alternative_history_months at 50% rate",
+      "perturbed_feature": "alternative_history_months",
+      "configured_intensity": 0.5,
+      "scenario_seed": 2028018,
+      "effective_additional_rate": 0.5,
+      "rows_selected_for_degradation": 1000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.5
+      }
+    },
+    "missingness_alternative_history_months_rate_1.00": {
+      "scenario_id": "missingness_alternative_history_months_rate_1.00",
+      "scenario_family": "individual_missingness",
+      "scenario_type": "missingness_individual",
+      "scenario_description": "MCAR dropout in alternative_history_months at 100% rate",
+      "perturbed_feature": "alternative_history_months",
+      "configured_intensity": 1.0,
+      "scenario_seed": 2028019,
+      "effective_additional_rate": 1.0,
+      "rows_selected_for_degradation": 2000,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 1.0
+      }
+    },
+    "noise_utility_payment_timeliness_std_05pct_range": {
+      "scenario_id": "noise_utility_payment_timeliness_std_05pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in utility_payment_timeliness with std=5% of domain range",
+      "perturbed_feature": "utility_payment_timeliness",
+      "configured_intensity": 0.05,
+      "scenario_seed": 2028020,
+      "noise_std": 0.0475,
+      "domain_min": 0.05,
+      "domain_max": 1.0,
+      "domain_range": 0.95,
+      "n_non_nan_perturbed": 1860,
+      "n_clipped_min": 0,
+      "n_clipped_max": 183,
+      "pct_clipped": 9.838709677419356,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_utility_payment_timeliness_std_10pct_range": {
+      "scenario_id": "noise_utility_payment_timeliness_std_10pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in utility_payment_timeliness with std=10% of domain range",
+      "perturbed_feature": "utility_payment_timeliness",
+      "configured_intensity": 0.1,
+      "scenario_seed": 2028021,
+      "noise_std": 0.095,
+      "domain_min": 0.05,
+      "domain_max": 1.0,
+      "domain_range": 0.95,
+      "n_non_nan_perturbed": 1860,
+      "n_clipped_min": 0,
+      "n_clipped_max": 230,
+      "pct_clipped": 12.365591397849462,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_utility_payment_timeliness_std_20pct_range": {
+      "scenario_id": "noise_utility_payment_timeliness_std_20pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in utility_payment_timeliness with std=20% of domain range",
+      "perturbed_feature": "utility_payment_timeliness",
+      "configured_intensity": 0.2,
+      "scenario_seed": 2028022,
+      "noise_std": 0.19,
+      "domain_min": 0.05,
+      "domain_max": 1.0,
+      "domain_range": 0.95,
+      "n_non_nan_perturbed": 1860,
+      "n_clipped_min": 0,
+      "n_clipped_max": 379,
+      "pct_clipped": 20.376344086021504,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_rental_payment_timeliness_std_05pct_range": {
+      "scenario_id": "noise_rental_payment_timeliness_std_05pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in rental_payment_timeliness with std=5% of domain range",
+      "perturbed_feature": "rental_payment_timeliness",
+      "configured_intensity": 0.05,
+      "scenario_seed": 2028023,
+      "noise_std": 0.0475,
+      "domain_min": 0.05,
+      "domain_max": 1.0,
+      "domain_range": 0.95,
+      "n_non_nan_perturbed": 1740,
+      "n_clipped_min": 0,
+      "n_clipped_max": 145,
+      "pct_clipped": 8.333333333333332,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_rental_payment_timeliness_std_10pct_range": {
+      "scenario_id": "noise_rental_payment_timeliness_std_10pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in rental_payment_timeliness with std=10% of domain range",
+      "perturbed_feature": "rental_payment_timeliness",
+      "configured_intensity": 0.1,
+      "scenario_seed": 2028024,
+      "noise_std": 0.095,
+      "domain_min": 0.05,
+      "domain_max": 1.0,
+      "domain_range": 0.95,
+      "n_non_nan_perturbed": 1740,
+      "n_clipped_min": 0,
+      "n_clipped_max": 212,
+      "pct_clipped": 12.183908045977011,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_rental_payment_timeliness_std_20pct_range": {
+      "scenario_id": "noise_rental_payment_timeliness_std_20pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in rental_payment_timeliness with std=20% of domain range",
+      "perturbed_feature": "rental_payment_timeliness",
+      "configured_intensity": 0.2,
+      "scenario_seed": 2028025,
+      "noise_std": 0.19,
+      "domain_min": 0.05,
+      "domain_max": 1.0,
+      "domain_range": 0.95,
+      "n_non_nan_perturbed": 1740,
+      "n_clipped_min": 0,
+      "n_clipped_max": 320,
+      "pct_clipped": 18.39080459770115,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_digital_payment_regularity_std_05pct_range": {
+      "scenario_id": "noise_digital_payment_regularity_std_05pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in digital_payment_regularity with std=5% of domain range",
+      "perturbed_feature": "digital_payment_regularity",
+      "configured_intensity": 0.05,
+      "scenario_seed": 2028026,
+      "noise_std": 0.049,
+      "domain_min": 0.02,
+      "domain_max": 1.0,
+      "domain_range": 0.98,
+      "n_non_nan_perturbed": 1900,
+      "n_clipped_min": 0,
+      "n_clipped_max": 125,
+      "pct_clipped": 6.578947368421052,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_digital_payment_regularity_std_10pct_range": {
+      "scenario_id": "noise_digital_payment_regularity_std_10pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in digital_payment_regularity with std=10% of domain range",
+      "perturbed_feature": "digital_payment_regularity",
+      "configured_intensity": 0.1,
+      "scenario_seed": 2028027,
+      "noise_std": 0.098,
+      "domain_min": 0.02,
+      "domain_max": 1.0,
+      "domain_range": 0.98,
+      "n_non_nan_perturbed": 1900,
+      "n_clipped_min": 0,
+      "n_clipped_max": 166,
+      "pct_clipped": 8.736842105263158,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_digital_payment_regularity_std_20pct_range": {
+      "scenario_id": "noise_digital_payment_regularity_std_20pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in digital_payment_regularity with std=20% of domain range",
+      "perturbed_feature": "digital_payment_regularity",
+      "configured_intensity": 0.2,
+      "scenario_seed": 2028028,
+      "noise_std": 0.196,
+      "domain_min": 0.02,
+      "domain_max": 1.0,
+      "domain_range": 0.98,
+      "n_non_nan_perturbed": 1900,
+      "n_clipped_min": 8,
+      "n_clipped_max": 298,
+      "pct_clipped": 16.105263157894736,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_cashflow_stability_index_std_05pct_range": {
+      "scenario_id": "noise_cashflow_stability_index_std_05pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in cashflow_stability_index with std=5% of domain range",
+      "perturbed_feature": "cashflow_stability_index",
+      "configured_intensity": 0.05,
+      "scenario_seed": 2028029,
+      "noise_std": 0.049,
+      "domain_min": 0.02,
+      "domain_max": 1.0,
+      "domain_range": 0.98,
+      "n_non_nan_perturbed": 1851,
+      "n_clipped_min": 5,
+      "n_clipped_max": 91,
+      "pct_clipped": 5.186385737439222,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_cashflow_stability_index_std_10pct_range": {
+      "scenario_id": "noise_cashflow_stability_index_std_10pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in cashflow_stability_index with std=10% of domain range",
+      "perturbed_feature": "cashflow_stability_index",
+      "configured_intensity": 0.1,
+      "scenario_seed": 2028030,
+      "noise_std": 0.098,
+      "domain_min": 0.02,
+      "domain_max": 1.0,
+      "domain_range": 0.98,
+      "n_non_nan_perturbed": 1851,
+      "n_clipped_min": 5,
+      "n_clipped_max": 105,
+      "pct_clipped": 5.942733657482442,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_cashflow_stability_index_std_20pct_range": {
+      "scenario_id": "noise_cashflow_stability_index_std_20pct_range",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_continuous",
+      "scenario_description": "Zero-mean Gaussian noise in cashflow_stability_index with std=20% of domain range",
+      "perturbed_feature": "cashflow_stability_index",
+      "configured_intensity": 0.2,
+      "scenario_seed": 2028031,
+      "noise_std": 0.196,
+      "domain_min": 0.02,
+      "domain_max": 1.0,
+      "domain_range": 0.98,
+      "n_non_nan_perturbed": 1851,
+      "n_clipped_min": 26,
+      "n_clipped_max": 223,
+      "pct_clipped": 13.452188006482983,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_alternative_history_months_std_1_months": {
+      "scenario_id": "noise_alternative_history_months_std_1_months",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_ordinal",
+      "scenario_description": "Zero-mean Gaussian noise in alternative_history_months with std=1 months (clipped & rounded)",
+      "perturbed_feature": "alternative_history_months",
+      "configured_intensity": 1.0,
+      "scenario_seed": 2028032,
+      "noise_std": 1.0,
+      "domain_min": 0.0,
+      "domain_max": 24.0,
+      "domain_range": 24.0,
+      "n_non_nan_perturbed": 2000,
+      "n_clipped_min": 10,
+      "n_clipped_max": 88,
+      "pct_clipped": 4.9,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_alternative_history_months_std_3_months": {
+      "scenario_id": "noise_alternative_history_months_std_3_months",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_ordinal",
+      "scenario_description": "Zero-mean Gaussian noise in alternative_history_months with std=3 months (clipped & rounded)",
+      "perturbed_feature": "alternative_history_months",
+      "configured_intensity": 3.0,
+      "scenario_seed": 2028033,
+      "noise_std": 3.0,
+      "domain_min": 0.0,
+      "domain_max": 24.0,
+      "domain_range": 24.0,
+      "n_non_nan_perturbed": 2000,
+      "n_clipped_min": 33,
+      "n_clipped_max": 142,
+      "pct_clipped": 8.75,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    },
+    "noise_alternative_history_months_std_6_months": {
+      "scenario_id": "noise_alternative_history_months_std_6_months",
+      "scenario_family": "measurement_noise",
+      "scenario_type": "measurement_noise_ordinal",
+      "scenario_description": "Zero-mean Gaussian noise in alternative_history_months with std=6 months (clipped & rounded)",
+      "perturbed_feature": "alternative_history_months",
+      "configured_intensity": 6.0,
+      "scenario_seed": 2028034,
+      "noise_std": 6.0,
+      "domain_min": 0.0,
+      "domain_max": 24.0,
+      "domain_range": 24.0,
+      "n_non_nan_perturbed": 2000,
+      "n_clipped_min": 87,
+      "n_clipped_max": 263,
+      "pct_clipped": 17.5,
+      "observed_missingness_rates": {
+        "utility_payment_timeliness": 0.07,
+        "rental_payment_timeliness": 0.13,
+        "digital_payment_regularity": 0.05,
+        "cashflow_stability_index": 0.0745,
+        "alternative_history_months": 0.0
+      }
+    }
+  }
+}
