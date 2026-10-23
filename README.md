@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 157 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, and feature ablation experiment utilities:
+The test suite contains 158 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, and feature ablation experiment utilities:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -136,9 +136,10 @@ To evaluate statistical stability beyond a single dataset, a reproducible 20-see
   - Subtraction direction: $\Delta \text{Metric} = \text{Metric}_{\text{ablated}} - \text{Metric}_{\text{full\_hybrid}}$.
   - For higher-is-better metrics (ROC-AUC, Gini, KS, PR-AUC): $\Delta < 0$ reflects performance degradation when the feature is omitted.
   - For lower-is-better metrics (Brier score, log loss, ECE): $\Delta > 0$ reflects calibration / error degradation when the feature is omitted.
-- **Key Findings (20 Seeds Summary):**
+- **Key Findings & Robustness Observations (20 Seeds Summary):**
   - Full hybrid mean test ROC-AUC is $0.9031 \pm 0.0068$ across the 20 seeds.
-  - Removing **utility payment timeliness** causes the largest average drop in ROC-AUC ($\Delta = -0.0177 \pm 0.0035$, 100% of seeds dropped), followed by **cash-flow stability** ($\Delta = -0.0155 \pm 0.0030$).
+  - Removing **utility payment timeliness** causes the single largest performance drop in 15 of 20 seeds (mean rank 1.35, $\Delta = -0.0177 \pm 0.0035$), while **cash-flow stability** is rank 1 in 5 seeds and rank 2 in 12 seeds (mean rank 1.90, $\Delta = -0.0155 \pm 0.0030$).
+  - **Empirical Ranking Distribution & Variability:** While omitting alternative features consistently degrades discrimination ($\Delta < 0$ across all 20 seeds for 4 out of 5 features), relative feature importance ranks vary across simulation seeds due to finite-sample sampling noise. The exact complete five-feature hierarchy (`utility > cashflow > digital > rental > alt_history_months`) was observed in **7 of 20 seeds (35.0%)**.
   - Traditional baseline (all alternative features removed) drops ROC-AUC by an average of $-0.1132 \pm 0.0125$.
 - **Synthetic Data Disclaimer:**
   Because the target generation formula in `train.py` explicitly incorporates alternative behavioral features, observed performance gains are **expected by construction**. These results demonstrate feature-ablation mechanics in synthetic benchmarks and **do not** prove that alternative data predicts real-world borrower creditworthiness.
@@ -146,6 +147,7 @@ To evaluate statistical stability beyond a single dataset, a reproducible 20-see
   - `results_by_seed.csv`: Full metric results across all 20 seeds and 7 scenarios.
   - `paired_deltas_by_seed.csv`: Paired metric deltas relative to the full hybrid model.
   - `summary.csv`: Descriptive summary statistics (mean, std, median, min, max, q25, q75).
+  - `ranking_distribution.csv`: Empirical rank distribution (counts/proportions ranks 1–5, mean/min/max rank).
   - `feature_ablation_plot.png`: 4-panel figure comparing paired delta distributions and absolute performance.
   - `experiment_report.md`: Comprehensive audit report with methodology, tables, and governance notes.
   - `run_metadata.json`: Machine-readable execution configuration and environment metadata.

@@ -2365,6 +2365,7 @@ class TestAlternativeFeatureAblationExperiment(unittest.TestCase):
             self.assertTrue((tmp_path / "results_by_seed.csv").exists())
             self.assertTrue((tmp_path / "paired_deltas_by_seed.csv").exists())
             self.assertTrue((tmp_path / "summary.csv").exists())
+            self.assertTrue((tmp_path / "ranking_distribution.csv").exists())
             self.assertTrue((tmp_path / "feature_ablation_plot.png").exists())
             self.assertTrue((tmp_path / "experiment_report.md").exists())
             self.assertTrue((tmp_path / "run_metadata.json").exists())
@@ -2372,6 +2373,92 @@ class TestAlternativeFeatureAblationExperiment(unittest.TestCase):
         # Verify production files remain untouched
         self.assertEqual(prod_model.stat().st_mtime, model_mtime_before)
         self.assertEqual(primary_report.stat().st_mtime, report_mtime_before)
+
+    def test_feature_ranking_statistics_derivation_and_robustness_expectations(self):
+        """Derives per-feature ranking statistics from paired deltas and checks regression expectations."""
+        deltas_csv_path = ROOT / "reports" / "ablation_robustness" / "paired_deltas_by_seed.csv"
+        self.assertTrue(deltas_csv_path.exists(), "paired_deltas_by_seed.csv must exist in reports.")
+
+        deltas_df = pd.read_csv(deltas_csv_path)
+        ranking_df, ranking_meta = ablation_exp.compute_feature_ranking_statistics(deltas_df)
+
+        # 1. Scope & filtering: exactly 5 single-feature ablations, traditional_baseline excluded
+        self.assertEqual(len(ranking_df), 5)
+        self.assertNotIn("traditional_baseline", ranking_df["scenario"].tolist())
+        self.assertNotIn("all_alternative", ranking_df["ablated_feature"].tolist())
+        self.assertEqual(set(ranking_df["ablated_feature"]), set(validation.ALTERNATIVE_FEATURES))
+
+        # 2. Regression expectations against committed 20-seed dataset
+        # Table counts: [rank_1, rank_2, rank_3, rank_4, rank_5], mean_rank, min_rank, max_rank
+        expected_records = {
+            "utility_payment_timeliness": {
+                "counts": [15, 4, 0, 1, 0],
+                "mean_rank": 1.35,
+                "min_rank": 1,
+                "max_rank": 4,
+            },
+            "cashflow_stability_index": {
+                "counts": [5, 12, 3, 0, 0],
+                "mean_rank": 1.90,
+                "min_rank": 1,
+                "max_rank": 3,
+            },
+            "digital_payment_regularity": {
+                "counts": [0, 4, 10, 6, 0],
+                "mean_rank": 3.10,
+                "min_rank": 2,
+                "max_rank": 4,
+            },
+            "rental_payment_timeliness": {
+                "counts": [0, 0, 7, 13, 0],
+                "mean_rank": 3.65,
+                "min_rank": 3,
+                "max_rank": 4,
+            },
+            "alternative_history_months": {
+                "counts": [0, 0, 0, 0, 20],
+                "mean_rank": 5.00,
+                "min_rank": 5,
+                "max_rank": 5,
+            },
+        }
+
+        total_seeds = ranking_meta["total_seeds"]
+        self.assertEqual(total_seeds, 20)
+
+        for feat, exp in expected_records.items():
+            row = ranking_df[ranking_df["ablated_feature"] == feat].iloc[0]
+            for r in range(1, 6):
+                exp_count = exp["counts"][r - 1]
+                exp_prop = exp_count / total_seeds
+                self.assertEqual(row[f"rank_{r}_count"], exp_count, f"{feat} rank {r} count mismatch")
+                self.assertAlmostEqual(row[f"rank_{r}_prop"], exp_prop, places=6, msg=f"{feat} rank {r} prop mismatch")
+
+            self.assertAlmostEqual(row["mean_rank"], exp["mean_rank"], places=4, msg=f"{feat} mean rank mismatch")
+            self.assertEqual(row["min_rank"], exp["min_rank"], f"{feat} min rank mismatch")
+            self.assertEqual(row["max_rank"], exp["max_rank"], f"{feat} max rank mismatch")
+
+        # Proportions sum to 1.0 for each feature
+        for _, row in ranking_df.iterrows():
+            total_prop = sum(row[f"rank_{r}_prop"] for r in range(1, 6))
+            self.assertAlmostEqual(total_prop, 1.0, places=6)
+
+        # 3. Hierarchy ordering metadata
+        expected_order = [
+            "utility_payment_timeliness",
+            "cashflow_stability_index",
+            "digital_payment_regularity",
+            "rental_payment_timeliness",
+            "alternative_history_months",
+        ]
+        self.assertEqual(ranking_meta["mean_hierarchy"], expected_order)
+        self.assertEqual(ranking_meta["exact_hierarchy_matches"], 7)
+        self.assertAlmostEqual(ranking_meta["exact_hierarchy_proportion"], 7 / 20, places=6)
+
+        # 4. Error handling
+        bad_df = pd.DataFrame({"seed": [1], "scenario": ["traditional_baseline"], "ablated_feature": ["all_alternative"]})
+        with self.assertRaises(ValueError):
+            ablation_exp.compute_feature_ranking_statistics(bad_df)
 
 
 if __name__ == "__main__":

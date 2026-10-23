@@ -332,6 +332,87 @@ def compute_robustness_summary(
     return pd.DataFrame(summary_rows)
 
 
+def compute_feature_ranking_statistics(
+    deltas_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Compute per-seed ranking statistics for single-feature ablations.
+
+    Ranks each seed's single-feature ablations by delta_roc_auc ascending
+    (most negative delta = rank 1, representing the largest performance drop).
+    Excludes the traditional_baseline scenario because it removes all alternative
+    features simultaneously rather than a single feature.
+
+    Returns
+    -------
+    ranking_df : pd.DataFrame
+        Table summarizing rank counts (ranks 1 to 5), proportions, mean rank, min rank, and max rank.
+    ranking_meta : dict[str, Any]
+        Metadata including mean hierarchy ordering, exact complete hierarchy matches, and proportion.
+    """
+    single = deltas_df[deltas_df["scenario"] != "traditional_baseline"].copy()
+    if single.empty:
+        raise ValueError("deltas_df contains no single-feature ablation rows.")
+
+    # Rank by delta_roc_auc ascending (most negative = rank 1)
+    single["rank"] = single.groupby("seed")["delta_roc_auc"].rank(ascending=True, method="min").astype(int)
+
+    total_seeds = single["seed"].nunique()
+    scenarios = get_ablation_scenarios()
+
+    ranking_rows: list[dict[str, Any]] = []
+    features_present = list(single["ablated_feature"].unique())
+
+    for feat in features_present:
+        feat_data = single[single["ablated_feature"] == feat]
+        ranks = feat_data["rank"].to_numpy()
+        sc_name = feat_data["scenario"].iloc[0]
+        sc_label = scenarios[sc_name]["label"] if sc_name in scenarios else sc_name
+
+        counts = {r: int(np.sum(ranks == r)) for r in range(1, 6)}
+        props = {r: counts[r] / total_seeds for r in range(1, 6)}
+
+        row = {
+            "ablated_feature": feat,
+            "scenario": sc_name,
+            "scenario_label": sc_label,
+            "rank_1_count": counts[1],
+            "rank_1_prop": props[1],
+            "rank_2_count": counts[2],
+            "rank_2_prop": props[2],
+            "rank_3_count": counts[3],
+            "rank_3_prop": props[3],
+            "rank_4_count": counts[4],
+            "rank_4_prop": props[4],
+            "rank_5_count": counts[5],
+            "rank_5_prop": props[5],
+            "mean_rank": float(np.mean(ranks)),
+            "min_rank": int(np.min(ranks)),
+            "max_rank": int(np.max(ranks)),
+        }
+        ranking_rows.append(row)
+
+    ranking_df = pd.DataFrame(ranking_rows).sort_values("mean_rank").reset_index(drop=True)
+
+    # Expected/mean hierarchy ordering
+    mean_order = ranking_df["ablated_feature"].tolist()
+
+    # Calculate how often the exact complete 5-feature ranking occurred
+    exact_matches = 0
+    for s in single["seed"].unique():
+        sub = single[single["seed"] == s].sort_values("delta_roc_auc")
+        if list(sub["ablated_feature"]) == mean_order:
+            exact_matches += 1
+
+    ranking_meta = {
+        "mean_hierarchy": mean_order,
+        "exact_hierarchy_matches": exact_matches,
+        "total_seeds": total_seeds,
+        "exact_hierarchy_proportion": float(exact_matches / total_seeds) if total_seeds > 0 else 0.0,
+    }
+
+    return ranking_df, ranking_meta
+
+
 def run_multi_seed_ablation(
     seeds: Sequence[int],
     n_samples: int = DEFAULT_N_SAMPLES,
@@ -592,15 +673,48 @@ def generate_experiment_report(
             f"| **{lbl}** | {d_auc_m:+.4f} (±{d_auc_s:.4f}) | {d_auc_med:+.4f} | {neg_pct:.0f}% ({int(round(neg_pct * 0.20))}/20) | {d_ap_m:+.4f} | {d_brier_m:+.4f} |"
         )
 
+    ranking_df, ranking_meta = compute_feature_ranking_statistics(deltas_df)
+
     report_lines.extend([
+        "",
+        "### 4.1 Feature Ranking Distribution Across Seeds (Ranks 1 to 5)",
+        "",
+        "Single-feature ablations ranked by held-out $\\Delta \\text{ROC-AUC}$ ascending (rank 1 = most negative delta, representing the largest single-feature performance drop). `traditional_baseline` is excluded because it removes all alternative features rather than one:",
+        "",
+        "| Feature Omitted | Rank 1 | Rank 2 | Rank 3 | Rank 4 | Rank 5 | Mean Rank | Min–Max Rank |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |",
+    ])
+
+    for _, row in ranking_df.iterrows():
+        feat = row["ablated_feature"]
+        r1_str = f"{row['rank_1_count']} ({row['rank_1_prop']*100:.0f}%)"
+        r2_str = f"{row['rank_2_count']} ({row['rank_2_prop']*100:.0f}%)"
+        r3_str = f"{row['rank_3_count']} ({row['rank_3_prop']*100:.0f}%)"
+        r4_str = f"{row['rank_4_count']} ({row['rank_4_prop']*100:.0f}%)"
+        r5_str = f"{row['rank_5_count']} ({row['rank_5_prop']*100:.0f}%)"
+        mean_r = f"{row['mean_rank']:.2f}"
+        min_max = f"{row['min_rank']}–{row['max_rank']}"
+        report_lines.append(
+            f"| **{feat}** | {r1_str} | {r2_str} | {r3_str} | {r4_str} | {r5_str} | {mean_r} | {min_max} |"
+        )
+
+    exact_cnt = ranking_meta["exact_hierarchy_matches"]
+    exact_tot = ranking_meta["total_seeds"]
+    exact_pct = ranking_meta["exact_hierarchy_proportion"] * 100.0
+
+    report_lines.extend([
+        "",
+        f"- **Complete Hierarchy Frequency:** The exact complete ordering (`utility > cashflow > digital > rental > alt_history_months`) occurred in only **{exact_cnt} of {exact_tot} seeds ({exact_pct:.1f}%)**.",
+        "- **Sampling Variance & Rank Fluctuations:** While utility payment timeliness and cash-flow stability generally demonstrate the largest effects (together accounting for 100% of Rank 1 outcomes), relative rankings vary across simulation seeds due to finite-sample variability.",
+        "- **Directional Consistency vs. Relative Ranking:** A feature having a consistently negative paired delta across 100% of seeds (which holds for utility timeliness, cash-flow stability, digital regularity, and rental timeliness) confirms that omitting the feature reliably reduces model discrimination under this synthetic process. However, this does **not** mean the relative importance hierarchy among these features is rigid or deterministic across different datasets.",
         "",
         "---",
         "",
         "## 5. Key Findings & Robustness Observations",
         "",
-        "1. **Consistent Feature Hierarchy Across Seeds:**",
-        "   - Removing **utility payment timeliness** or **cash-flow stability** produced the largest and most consistent drops in discrimination across all 20 seeds.",
-        "   - 100% of simulation repetitions confirmed that the Full Hybrid model outperformed the Traditional Baseline in ROC-AUC and KS statistic.",
+        "1. **Dominant Features vs. Ranking Permutations:**",
+        f"   - Removing **utility payment timeliness** produced the single largest performance drop in {ranking_df.loc[ranking_df['ablated_feature']=='utility_payment_timeliness', 'rank_1_count'].iloc[0]} of {exact_tot} seeds (mean rank {ranking_df.loc[ranking_df['ablated_feature']=='utility_payment_timeliness', 'mean_rank'].iloc[0]:.2f}), while **cash-flow stability** produced the largest drop in {ranking_df.loc[ranking_df['ablated_feature']=='cashflow_stability_index', 'rank_1_count'].iloc[0]} seeds and second-largest in {ranking_df.loc[ranking_df['ablated_feature']=='cashflow_stability_index', 'rank_2_count'].iloc[0]} seeds (mean rank {ranking_df.loc[ranking_df['ablated_feature']=='cashflow_stability_index', 'mean_rank'].iloc[0]:.2f}).",
+        f"   - Although the Full Hybrid model outperformed the Traditional Baseline across 100% of simulation seeds, the exact complete five-feature hierarchy occurred in only **{exact_cnt} of {exact_tot} seeds ({exact_pct:.1f}%)**. Finite sampling variance across independent synthetic draws causes ranking permutations between closely competitive signals (e.g., utility vs. cashflow for rank 1; digital vs. rental for rank 3).",
         "2. **Descriptive Sample Variability:**",
         "   - Across independent synthetic generations, the Full Hybrid ROC-AUC varied within a narrow band (std ≈ 0.007–0.010), demonstrating that model training is stable given this generative specification.",
         "   - Note: The reported ranges represent descriptive sample spread across seeds, **not** formal population confidence intervals.",
@@ -664,7 +778,13 @@ def save_experiment_artifacts(
     results_df.to_csv(results_path, index=False)
     deltas_df.to_csv(deltas_path, index=False)
     summary_df.to_csv(summary_path, index=False)
-    meta_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    ranking_df, ranking_meta = compute_feature_ranking_statistics(deltas_df)
+    ranking_path = output_dir / "ranking_distribution.csv"
+    ranking_df.to_csv(ranking_path, index=False)
+
+    metadata["ranking_analysis"] = ranking_meta
+    meta_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
 
     generate_ablation_plot(deltas_df, results_df, plot_path)
     generate_experiment_report(summary_df, results_df, deltas_df, metadata, report_path)

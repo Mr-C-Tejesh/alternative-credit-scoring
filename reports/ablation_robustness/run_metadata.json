@@ -1,6 +1,6 @@
 {
   "experiment_name": "alternative_feature_ablation_multi_seed_study",
-  "timestamp_utc": "2026-10-23T19:24:50.932737+00:00",
+  "timestamp_utc": "2026-10-23T19:46:49.570235+00:00",
   "seeds": [
     2026,
     2027,
@@ -89,5 +89,17 @@
     "lower_is_better_metrics": "Positive delta indicates ablation increased error/calibration-loss relative to full hybrid."
   },
   "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
-  "synthetic_benchmark_disclaimer": "SIMULATION BENCHMARK ONLY: Features and target default are generated artificially. The synthetic target formula in train.py explicitly incorporates alternative data. Performance changes demonstrate mathematical feature ablation properties on synthetic distributions, NOT real-world borrower creditworthiness or underwriting policy validity."
+  "synthetic_benchmark_disclaimer": "SIMULATION BENCHMARK ONLY: Features and target default are generated artificially. The synthetic target formula in train.py explicitly incorporates alternative data. Performance changes demonstrate mathematical feature ablation properties on synthetic distributions, NOT real-world borrower creditworthiness or underwriting policy validity.",
+  "ranking_analysis": {
+    "mean_hierarchy": [
+      "utility_payment_timeliness",
+      "cashflow_stability_index",
+      "digital_payment_regularity",
+      "rental_payment_timeliness",
+      "alternative_history_months"
+    ],
+    "exact_hierarchy_matches": 7,
+    "total_seeds": 20,
+    "exact_hierarchy_proportion": 0.35
+  }
 }

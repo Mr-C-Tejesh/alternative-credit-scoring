@@ -1,0 +1,6 @@
+ablated_feature,scenario,scenario_label,rank_1_count,rank_1_prop,rank_2_count,rank_2_prop,rank_3_count,rank_3_prop,rank_4_count,rank_4_prop,rank_5_count,rank_5_prop,mean_rank,min_rank,max_rank
+utility_payment_timeliness,without_utility_payment_timeliness,Hybrid without utility payment timeliness,15,0.75,4,0.2,0,0.0,1,0.05,0,0.0,1.35,1,4
+cashflow_stability_index,without_cashflow_stability_index,Hybrid without cash-flow stability index,5,0.25,12,0.6,3,0.15,0,0.0,0,0.0,1.9,1,3
+digital_payment_regularity,without_digital_payment_regularity,Hybrid without digital payment regularity,0,0.0,4,0.2,10,0.5,6,0.3,0,0.0,3.1,2,4
+rental_payment_timeliness,without_rental_payment_timeliness,Hybrid without rental payment timeliness,0,0.0,0,0.0,7,0.35,13,0.65,0,0.0,3.65,3,4
+alternative_history_months,without_alternative_history_months,Hybrid without alternative history months,0,0.0,0,0.0,0,0.0,0,0.0,20,1.0,5.0,5,5

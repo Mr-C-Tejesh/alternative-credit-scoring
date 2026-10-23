@@ -64,13 +64,29 @@ Marginal paired differences evaluated on the identical held-out test set for eac
 | **Hybrid without cash-flow stability index** | -0.0155 (±0.0030) | -0.0160 | 100% (20/20) | -0.0280 | +0.0084 |
 | **Traditional baseline** | -0.1132 (±0.0125) | -0.1110 | 100% (20/20) | -0.2042 | +0.0490 |
 
+### 4.1 Feature Ranking Distribution Across Seeds (Ranks 1 to 5)
+
+Single-feature ablations ranked by held-out $\Delta \text{ROC-AUC}$ ascending (rank 1 = most negative delta, representing the largest single-feature performance drop). `traditional_baseline` is excluded because it removes all alternative features rather than one:
+
+| Feature Omitted | Rank 1 | Rank 2 | Rank 3 | Rank 4 | Rank 5 | Mean Rank | Min–Max Rank |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **utility_payment_timeliness** | 15 (75%) | 4 (20%) | 0 (0%) | 1 (5%) | 0 (0%) | 1.35 | 1–4 |
+| **cashflow_stability_index** | 5 (25%) | 12 (60%) | 3 (15%) | 0 (0%) | 0 (0%) | 1.90 | 1–3 |
+| **digital_payment_regularity** | 0 (0%) | 4 (20%) | 10 (50%) | 6 (30%) | 0 (0%) | 3.10 | 2–4 |
+| **rental_payment_timeliness** | 0 (0%) | 0 (0%) | 7 (35%) | 13 (65%) | 0 (0%) | 3.65 | 3–4 |
+| **alternative_history_months** | 0 (0%) | 0 (0%) | 0 (0%) | 0 (0%) | 20 (100%) | 5.00 | 5–5 |
+
+- **Complete Hierarchy Frequency:** The exact complete ordering (`utility > cashflow > digital > rental > alt_history_months`) occurred in only **7 of 20 seeds (35.0%)**.
+- **Sampling Variance & Rank Fluctuations:** While utility payment timeliness and cash-flow stability generally demonstrate the largest effects (together accounting for 100% of Rank 1 outcomes), relative rankings vary across simulation seeds due to finite-sample variability.
+- **Directional Consistency vs. Relative Ranking:** A feature having a consistently negative paired delta across 100% of seeds (which holds for utility timeliness, cash-flow stability, digital regularity, and rental timeliness) confirms that omitting the feature reliably reduces model discrimination under this synthetic process. However, this does **not** mean the relative importance hierarchy among these features is rigid or deterministic across different datasets.
+
 ---
 
 ## 5. Key Findings & Robustness Observations
 
-1. **Consistent Feature Hierarchy Across Seeds:**
-   - Removing **utility payment timeliness** or **cash-flow stability** produced the largest and most consistent drops in discrimination across all 20 seeds.
-   - 100% of simulation repetitions confirmed that the Full Hybrid model outperformed the Traditional Baseline in ROC-AUC and KS statistic.
+1. **Dominant Features vs. Ranking Permutations:**
+   - Removing **utility payment timeliness** produced the single largest performance drop in 15 of 20 seeds (mean rank 1.35), while **cash-flow stability** produced the largest drop in 5 seeds and second-largest in 12 seeds (mean rank 1.90).
+   - Although the Full Hybrid model outperformed the Traditional Baseline across 100% of simulation seeds, the exact complete five-feature hierarchy occurred in only **7 of 20 seeds (35.0%)**. Finite sampling variance across independent synthetic draws causes ranking permutations between closely competitive signals (e.g., utility vs. cashflow for rank 1; digital vs. rental for rank 3).
 2. **Descriptive Sample Variability:**
    - Across independent synthetic generations, the Full Hybrid ROC-AUC varied within a narrow band (std ≈ 0.007–0.010), demonstrating that model training is stable given this generative specification.
    - Note: The reported ranges represent descriptive sample spread across seeds, **not** formal population confidence intervals.
