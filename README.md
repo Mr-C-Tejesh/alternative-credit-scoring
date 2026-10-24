@@ -69,7 +69,7 @@ pip install -r requirements-runtime.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 254 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, HTTP inference API contracts, privacy-safe Prometheus runtime observability, and model artifact SHA-256 integrity verification:
+The test suite contains 264 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, HTTP inference API contracts, privacy-safe Prometheus runtime observability, artifact SHA-256 integrity verification, and final ML pipeline acceptance:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -107,11 +107,26 @@ python predict.py --age 40 --income 65000 --loans 2 --utilization 0.30
 
 ### E. (Optional) Re-train and Regenerate Artifacts
 
-To regenerate the synthetic dataset, refit all three models, and reproduce all metrics/reports:
+To regenerate the synthetic dataset, refit all three models, synchronize the artifact manifest, and reproduce all metrics/reports:
 
 ```bash
 python train.py
 ```
+
+The canonical training workflow executes the complete leakage-safe pipeline:
+1. **Deterministic Data Generation:** Generates 10,000 synthetic records using fixed seed `2026` (`data/synthetic_applicants.csv`).
+2. **Schema & Feature Validation:** Enforces strict domain bounds and schema contracts before splitting.
+3. **Stratified Split:** Partitions into 8,000 training records (80%) and 2,000 held-out test records (20%), preserving target default prevalence (~27.5%).
+4. **Out-of-Fold Threshold Analysis:** Runs 5-fold cross-validation strictly on the training partition (`reports/threshold_analysis.csv` and `reports/threshold_analysis.png`), preventing test-set leakage.
+5. **Model Training & Artifacts:**
+   - **Traditional Baseline:** Logistic Regression on 9 traditional features (`models/traditional_baseline.joblib`).
+   - **Hybrid Logistic Regression:** Logistic Regression on all 14 features with missingness indicators (`models/hybrid_logistic_regression.joblib`).
+   - **Hybrid HistGradientBoosting:** Tree ensemble benchmark on all 14 features (`models/hybrid_hist_gradient_boosting.joblib`).
+6. **Artifact Manifest Synchronization:** Automatically updates `models/model_manifest.json` recording the SHA-256 digest, byte size, schema version, and verified runtime environment (`python`, `scikit_learn`, `joblib`).
+7. **Evaluation Reporting:** Evaluates discrimination (ROC-AUC, Gini, KS), probability calibration (Brier score, Log-Loss, 10-bin uniform ECE), test-set permutation importance, and thin-file subgroup metrics (`reports/test_metrics.csv`, `reports/run_summary.json`).
+
+> [!NOTE]
+> **Controlled Repeatability vs. Environment Differences:** Fixed seeds (`2026`) guarantee reproducible synthetic data generation and cross-validation splits. However, binary floating-point serialization and unpickling outputs may vary across major Python versions, operating systems, and library updates. Supported compatibility bounds are formally declared in `models/model_manifest.json`.
 
 ### F. (Optional) Run the Multi-Seed Feature Ablation Study
 
@@ -625,7 +640,7 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 254 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 264 comprehensive automated unit and AppTest tests
 ├── scripts/
 │   └── test_container_runtime.py # CI & local container runtime smoke test suite
 ├── .dockerignore                # Container build context exclusions

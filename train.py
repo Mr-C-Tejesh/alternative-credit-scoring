@@ -67,6 +67,7 @@ from validation import (
     validate_dataset_schema,
     validate_feature_frame,
 )
+from inference_helper import generate_model_manifest
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
@@ -733,7 +734,16 @@ def main() -> None:
     hybrid_lr_pipe = build_hybrid_lr_pipeline()
     hybrid_lr_pipe.fit(train_df[ALL_FEATURES], y_train)
     hybrid_lr_probs = hybrid_lr_pipe.predict_proba(test_df[ALL_FEATURES])[:, 1]
-    joblib.dump(hybrid_lr_pipe, MODEL_DIR / "hybrid_logistic_regression.joblib")
+    hybrid_lr_path = MODEL_DIR / "hybrid_logistic_regression.joblib"
+    joblib.dump(hybrid_lr_pipe, hybrid_lr_path)
+
+    # Regenerate model artifact manifest to keep manifest and saved artifact mutually consistent
+    manifest = generate_model_manifest(
+        model_path=hybrid_lr_path,
+        output_path=MODEL_DIR / "model_manifest.json",
+        training_seed=SEED,
+        train_size=len(train_df),
+    )
 
     # --- Hybrid HistGradientBoosting ---
     hybrid_hgb_pipe = build_hybrid_hgb_pipeline()
@@ -883,6 +893,7 @@ def main() -> None:
     print(f"Synthetic default rate: {df[TARGET].mean():.3f}")
     print(metrics.to_string(index=False, float_format=lambda x: f"{x:.4f}"))
     print("Artifacts saved to data/, models/, and reports/.")
+    print(f"Artifact manifest updated: {MODEL_DIR / 'model_manifest.json'} (SHA-256: {manifest['sha256'][:8]}...)")
     print("IMPORTANT: These results do not validate real-world credit scoring.")
 
 

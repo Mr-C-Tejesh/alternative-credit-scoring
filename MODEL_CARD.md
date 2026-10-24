@@ -39,6 +39,8 @@ The supported bounds below reflect the generator distributions and input validat
 - Preprocessing pipelines (median imputation, standard scaling) are fitted strictly on training data.
 - Metrics evaluated: ROC-AUC, Gini coefficient, KS statistic, average precision (PR-AUC), Brier score, log loss, and Expected Calibration Error (ECE, 10 uniform bins).
 - **Out-of-Fold Threshold Analysis:** Decision threshold evaluation ($\tau \in [0.05, 0.95]$) is performed strictly on 5-fold cross-validated out-of-fold predictions on the **training partition** (8,000 samples). The held-out test partition is reserved strictly for generalization evaluation and was **not** used for threshold selection, preventing data snooping leakage.
+- **Canonical Training Workflow & Artifact Manifest Synchronization:** Executing `python train.py` runs the canonical pipeline and automatically updates `models/model_manifest.json`, ensuring the served model artifact's SHA-256 checksum and file size remain synchronized with verified environment metadata (`python`, `scikit_learn`, `joblib`).
+- **Repeatability Boundaries:** Fixed random seeds guarantee deterministic data sampling and cross-validation indexing. However, binary joblib unpickling and numerical floats may exhibit minor variations across operating system architectures or library minor releases; compatibility bounds are formally declared in `models/model_manifest.json`.
 
 ## Multi-Seed Robustness & Feature Ablation Analysis
 To assess sampling variability and marginal feature importance across independent generations, a 20-seed ablation study is documented in `experiments/alternative_feature_ablation.py` and `reports/ablation_robustness/experiment_report.md`:

@@ -9,10 +9,12 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import platform
 from typing import Any, Sequence
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn
 from sklearn.pipeline import Pipeline
 
 from explainability import ExplanationResult, explain_logistic_prediction
@@ -133,12 +135,18 @@ def verify_model_artifact_integrity(
 def generate_model_manifest(
     model_path: Path | str | None = None,
     output_path: Path | str | None = None,
+    dataset_path: str = "data/synthetic_applicants.csv",
+    training_seed: int = 2026,
+    train_size: int = 8000,
 ) -> dict[str, Any]:
     """Generate or update the version-controlled model manifest for the given model artifact.
 
     Args:
         model_path: Path to the serialized model artifact (.joblib). Defaults to DEFAULT_MODEL_PATH.
         output_path: Path to the output manifest JSON file. Defaults to DEFAULT_MANIFEST_PATH.
+        dataset_path: Relative path to dataset used for training. Defaults to "data/synthetic_applicants.csv".
+        training_seed: Seed used during data generation and train/test split. Defaults to 2026.
+        train_size: Number of training records used during fitting. Defaults to 8000.
 
     Returns:
         dict: The newly generated manifest dictionary.
@@ -153,6 +161,10 @@ def generate_model_manifest(
             hasher.update(chunk)
     sha256_hex = hasher.hexdigest().lower()
     size_bytes = target_path.stat().st_size
+
+    python_ver = platform.python_version()
+    sklearn_ver = getattr(sklearn, "__version__", "unknown")
+    joblib_ver = getattr(joblib, "__version__", "unknown")
 
     manifest = {
         "manifest_schema_version": "1.0.0",
@@ -169,14 +181,24 @@ def generate_model_manifest(
             "scikit_learn": ">=1.4,<1.8",
             "joblib": ">=1.3",
         },
+        "training_environment": {
+            "python": python_ver,
+            "scikit_learn": sklearn_ver,
+            "joblib": joblib_ver,
+        },
         "training_context": {
-            "dataset": "data/synthetic_applicants.csv",
-            "training_seed": 2026,
-            "train_size": 8000,
+            "dataset": dataset_path,
+            "training_seed": training_seed,
+            "train_size": train_size,
             "synthetic_demonstration_notice": (
                 "This model was trained on synthetic data for educational demonstration only. "
                 "It is not validated for real borrowers and must not be used to make credit decisions."
             ),
+            "environment": {
+                "python": python_ver,
+                "scikit_learn": sklearn_ver,
+                "joblib": joblib_ver,
+            },
         },
     }
 

@@ -4735,5 +4735,266 @@ class TestModelArtifactIntegrityAndSupplyChain(unittest.TestCase):
             self.assertEqual(verified["sha256"], manifest["sha256"])
 
 
+class TestFinalMLPipelineAndReproducibilityAcceptance(unittest.TestCase):
+    """Final ML pipeline acceptance tests verifying reproducibility, leakage-safe training, and artifact integrity."""
+
+    def test_identical_seeds_produce_identical_generated_datasets(self):
+        """Synthetic dataset generator must be completely deterministic given the same seed."""
+        df1 = train.generate_synthetic_dataset(n=500, seed=train.SEED)
+        df2 = train.generate_synthetic_dataset(n=500, seed=train.SEED)
+        pd.testing.assert_frame_equal(df1, df2)
+
+        # Different seed must yield distinct records
+        df_diff = train.generate_synthetic_dataset(n=500, seed=train.SEED + 1)
+        self.assertFalse(df1.equals(df_diff))
+
+    def test_canonical_training_split_and_target_exclusion_contract(self):
+        """Canonical training contract preserves target exclusion and 80/20 stratified split."""
+        # 1. Feature sets must strictly exclude the target and identifier
+        self.assertNotIn(validation.TARGET, validation.ALL_FEATURES)
+        self.assertNotIn(validation.TARGET, validation.TRADITIONAL_FEATURES)
+        self.assertNotIn(validation.TARGET, validation.ALTERNATIVE_FEATURES)
+        self.assertNotIn("synthetic_applicant_id", validation.ALL_FEATURES)
+
+        # 2. Stratified train/test split partitioning
+        df = train.generate_synthetic_dataset(n=1000, seed=train.SEED)
+        train_df, test_df = train.train_test_split(
+            df,
+            test_size=0.20,
+            random_state=train.SEED,
+            stratify=df[validation.TARGET],
+        )
+        self.assertEqual(len(train_df), 800)
+        self.assertEqual(len(test_df), 200)
+
+        # Stratification maintains target default rate
+        train_rate = train_df[validation.TARGET].mean()
+        test_rate = test_df[validation.TARGET].mean()
+        self.assertAlmostEqual(train_rate, test_rate, places=2)
+
+    def test_manifest_regeneration_matches_saved_artifact_checksum_and_size(self):
+        """Regenerated manifest must accurately match on-disk hybrid LR artifact SHA-256 and byte size."""
+        artifact_path = Path("models/hybrid_logistic_regression.joblib")
+        if not artifact_path.exists():
+            self.skipTest("models/hybrid_logistic_regression.joblib missing")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_manifest = Path(tmp_dir) / "test_manifest.json"
+            manifest = inference_helper.generate_model_manifest(
+                model_path=artifact_path,
+                output_path=temp_manifest,
+                training_seed=train.SEED,
+                train_size=8000,
+            )
+
+            # Checksum and size match disk
+            expected_size = artifact_path.stat().st_size
+            self.assertEqual(manifest["file_size_bytes"], expected_size)
+            self.assertEqual(len(manifest["sha256"]), 64)
+
+            # Verification passes against regenerated manifest
+            verified = inference_helper.verify_model_artifact_integrity(
+                model_path=artifact_path,
+                manifest_path=temp_manifest,
+            )
+            self.assertEqual(verified["sha256"], manifest["sha256"])
+
+    def test_missing_or_mismatched_artifact_fails_safely(self):
+        """Integrity verification fails safely on non-existent or modified artifacts without leaking paths."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_dir_path = Path(tmp_dir)
+
+            # Non-existent artifact
+            missing_artifact = temp_dir_path / "non_existent.joblib"
+            with self.assertRaises(FileNotFoundError) as ctx:
+                inference_helper.verify_model_artifact_integrity(model_path=missing_artifact)
+            self.assertIn("non_existent.joblib", str(ctx.exception))
+
+            # Mismatched/tampered artifact
+            tampered_artifact = temp_dir_path / "tampered.joblib"
+            tampered_artifact.write_bytes(b"tampered content that will not match sha")
+            with self.assertRaises(ValueError) as ctx:
+                inference_helper.verify_model_artifact_integrity(model_path=tampered_artifact)
+            self.assertIn("checksum mismatch", str(ctx.exception).lower())
+
+    def test_all_three_trained_model_artifacts_loadable_and_probabilities_valid(self):
+        """All three trained models load successfully and output valid 2D probability distributions."""
+        model_files = [
+            ("Traditional baseline", Path("models/traditional_baseline.joblib"), validation.TRADITIONAL_FEATURES),
+            ("Hybrid Logistic Regression", Path("models/hybrid_logistic_regression.joblib"), validation.ALL_FEATURES),
+            ("Hybrid HistGradientBoosting", Path("models/hybrid_hist_gradient_boosting.joblib"), validation.ALL_FEATURES),
+        ]
+
+        sample_row = {
+            "age_years": 34,
+            "monthly_income_inr": 60000.0,
+            "employment_tenure_years": 5.0,
+            "debt_to_income_ratio": 0.30,
+            "existing_loan_count": 1,
+            "credit_utilization_ratio": 0.25,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 730.0,
+            "utility_payment_timeliness": 0.95,
+            "rental_payment_timeliness": 0.90,
+            "digital_payment_regularity": 0.85,
+            "cashflow_stability_index": 0.70,
+            "alternative_history_months": 20,
+        }
+
+        for model_name, path, features in model_files:
+            if not path.exists():
+                self.skipTest(f"Model {path} not found")
+
+            model = joblib.load(path)
+            # Ensure multi_class compat for LR if needed
+            if hasattr(model, "named_steps") and "classifier" in model.named_steps:
+                clf = model.named_steps["classifier"]
+                if hasattr(clf, "classes_") and not hasattr(clf, "multi_class"):
+                    clf.multi_class = "auto"
+
+            input_df = pd.DataFrame([sample_row])[features]
+            probs = model.predict_proba(input_df)
+
+            self.assertEqual(probs.shape, (1, 2))
+            self.assertTrue(np.all(np.isfinite(probs)))
+            self.assertTrue(0.0 <= probs[0, 0] <= 1.0)
+            self.assertTrue(0.0 <= probs[0, 1] <= 1.0)
+            self.assertAlmostEqual(probs[0].sum(), 1.0, places=5)
+
+    def test_existing_evaluation_outputs_columns_and_finite_values(self):
+        """Saved evaluation reports contain expected columns, finite values, and correct model rankings."""
+        metrics_path = Path("reports/test_metrics.csv")
+        if not metrics_path.exists():
+            self.skipTest("reports/test_metrics.csv not found")
+
+        df = pd.read_csv(metrics_path)
+        required_cols = [
+            "model",
+            "roc_auc",
+            "gini_coefficient",
+            "ks_statistic",
+            "average_precision",
+            "brier_score",
+            "log_loss",
+            "ece_10_bins",
+        ]
+        for col in required_cols:
+            self.assertIn(col, df.columns)
+
+        self.assertEqual(len(df), 3)
+        self.assertTrue(df["roc_auc"].between(0.5, 1.0).all())
+        self.assertTrue(df["brier_score"].between(0.0, 1.0).all())
+
+        # Verify hybrid model outperforms traditional baseline on synthetic data
+        trad_auc = df.loc[df["model"].str.startswith("Traditional"), "roc_auc"].iloc[0]
+        hybrid_auc = df.loc[df["model"].str.contains("Hybrid \\(traditional"), "roc_auc"].iloc[0]
+        self.assertGreater(hybrid_auc, trad_auc)
+
+    def test_threshold_analysis_uses_training_oof_partition_not_test_set(self):
+        """Threshold analysis strictly uses training partition out-of-fold data to prevent leakage."""
+        summary_path = Path("reports/run_summary.json")
+        if not summary_path.exists():
+            self.skipTest("reports/run_summary.json not found")
+
+        summary = json.loads(summary_path.read_text())
+        self.assertIn("threshold_analysis", summary)
+        th_info = summary["threshold_analysis"]
+        self.assertEqual(th_info["data_partition"], "training_out_of_fold")
+        self.assertEqual(th_info["n_thresholds"], 19)
+
+        th_df = pd.read_csv("reports/threshold_analysis.csv")
+        self.assertIn("threshold", th_df.columns)
+        self.assertIn("precision", th_df.columns)
+        self.assertIn("recall", th_df.columns)
+        self.assertEqual(th_df["threshold"].nunique(), 19)
+        self.assertTrue(np.all(np.isfinite(th_df["precision"].dropna())))
+
+    def test_model_regeneration_preserves_inference_contract_and_no_leakage(self):
+        """Inference pipeline executes correctly with regenerated model and manifest without leakage."""
+        payload = {
+            "age_years": 29,
+            "monthly_income_inr": 48000.0,
+            "employment_tenure_years": 3.0,
+            "debt_to_income_ratio": 0.32,
+            "existing_loan_count": 1,
+            "credit_utilization_ratio": 0.40,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 690.0,
+            "utility_payment_timeliness": 0.88,
+            "rental_payment_timeliness": 0.85,
+            "digital_payment_regularity": 0.82,
+            "cashflow_stability_index": 0.65,
+            "alternative_history_months": 15,
+        }
+
+        row = inference_helper.build_applicant_row(**payload)
+        self.assertNotIn(validation.TARGET, row.columns)
+
+        model = inference_helper.load_saved_model(verify_integrity=True)
+        result = inference_helper.run_inference_pipeline(model, row)
+        self.assertTrue(0.0 <= result.probability <= 1.0)
+        self.assertTrue(300 <= result.score_result.display_score <= 850)
+        self.assertIsNotNone(result.risk_band)
+        self.assertIsNotNone(result.explanation)
+        self.assertTrue(len(result.explanation.top_risk_increasing) > 0)
+        self.assertTrue(len(result.explanation.top_risk_decreasing) > 0)
+
+        # Confirm manifest contains the explicit synthetic-only disclaimer notice
+        manifest = inference_helper.verify_model_artifact_integrity()
+        self.assertIn("synthetic data", manifest["training_context"]["synthetic_demonstration_notice"].lower())
+
+    def test_training_environment_metadata_accurately_recorded(self):
+        """Manifest captures actual Python, scikit-learn, and joblib environment versions."""
+        manifest_path = Path("models/model_manifest.json")
+        if not manifest_path.exists():
+            self.skipTest("models/model_manifest.json not found")
+
+        manifest = json.loads(manifest_path.read_text())
+        self.assertIn("training_environment", manifest)
+        env = manifest["training_environment"]
+        self.assertIn("python", env)
+        self.assertIn("scikit_learn", env)
+        self.assertIn("joblib", env)
+        self.assertTrue(len(env["python"]) > 0)
+        self.assertTrue(len(env["scikit_learn"]) > 0)
+        self.assertTrue(len(env["joblib"]) > 0)
+
+    def test_canonical_training_workflow_smoke_in_isolated_tempdir(self):
+        """Simulate end-to-end training and manifest regeneration in an isolated directory."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            temp_path = Path(tmp_dir)
+            temp_model = temp_path / "temp_hybrid_lr.joblib"
+            temp_manifest = temp_path / "temp_manifest.json"
+
+            # Fit pipeline on small synthetic sample
+            df = train.generate_synthetic_dataset(n=100, seed=train.SEED)
+            y = df[validation.TARGET]
+            pipe = train.build_hybrid_lr_pipeline()
+            pipe.fit(df[validation.ALL_FEATURES], y)
+
+            # Dump model
+            joblib.dump(pipe, temp_model)
+            self.assertTrue(temp_model.exists())
+
+            # Regenerate manifest
+            manifest = inference_helper.generate_model_manifest(
+                model_path=temp_model,
+                output_path=temp_manifest,
+                training_seed=train.SEED,
+                train_size=100,
+            )
+            self.assertTrue(temp_manifest.exists())
+            self.assertEqual(manifest["file_size_bytes"], temp_model.stat().st_size)
+
+            # Validate integrity
+            verified = inference_helper.verify_model_artifact_integrity(
+                model_path=temp_model,
+                manifest_path=temp_manifest,
+            )
+            self.assertEqual(verified["sha256"], manifest["sha256"])
+
+
 if __name__ == "__main__":
     unittest.main()

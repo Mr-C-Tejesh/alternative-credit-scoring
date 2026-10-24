@@ -16,10 +16,20 @@
     "scikit_learn": ">=1.4,<1.8",
     "joblib": ">=1.3"
   },
+  "training_environment": {
+    "python": "3.13.7",
+    "scikit_learn": "1.7.2",
+    "joblib": "1.6.0"
+  },
   "training_context": {
     "dataset": "data/synthetic_applicants.csv",
     "training_seed": 2026,
     "train_size": 8000,
-    "synthetic_demonstration_notice": "This model was trained on synthetic data for educational demonstration only. It is not validated for real borrowers and must not be used to make credit decisions."
+    "synthetic_demonstration_notice": "This model was trained on synthetic data for educational demonstration only. It is not validated for real borrowers and must not be used to make credit decisions.",
+    "environment": {
+      "python": "3.13.7",
+      "scikit_learn": "1.7.2",
+      "joblib": "1.6.0"
+    }
   }
 }
