@@ -12,17 +12,18 @@ RUN groupadd --system appgroup && useradd --system --gid appgroup --no-create-ho
 # Set working directory
 WORKDIR /app
 
-# Install dependencies first to optimize Docker layer caching
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Install lean runtime dependencies first to optimize Docker layer caching
+COPY requirements-runtime.txt ./
+RUN pip install --no-cache-dir -r requirements-runtime.txt && pip check
 
-# Copy only minimal files required for inference
+# Copy only minimal files required for inference and integrity verification
 COPY api.py ./
 COPY inference_helper.py ./
 COPY validation.py ./
 COPY risk_scoring.py ./
 COPY explainability.py ./
 COPY models/hybrid_logistic_regression.joblib ./models/hybrid_logistic_regression.joblib
+COPY models/model_manifest.json ./models/model_manifest.json
 
 # Set ownership of application files
 RUN chown -R appuser:appgroup /app

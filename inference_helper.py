@@ -6,8 +6,10 @@ scikit-learn backward-compatibility checks, and end-to-end inference/explanation
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+import json
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 import joblib
 import numpy as np
 import pandas as pd
@@ -35,6 +37,7 @@ from validation import (
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_MODEL_PATH = ROOT / "models" / "hybrid_logistic_regression.joblib"
+DEFAULT_MANIFEST_PATH = ROOT / "models" / "model_manifest.json"
 
 # Supported alternative features with human-readable labels for UI controls
 ALT_FEATURE_OPTIONS: list[tuple[str, str]] = [
@@ -60,7 +63,137 @@ class InferenceResult:
     row: pd.DataFrame
 
 
-def load_saved_model(model_path: Path | str | None = None) -> Pipeline:
+def verify_model_artifact_integrity(
+    model_path: Path | str | None = None,
+    manifest_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Verify that the model artifact exists and matches its manifest SHA-256 checksum and size.
+
+    Args:
+        model_path: Path to the serialized model artifact (.joblib). Defaults to DEFAULT_MODEL_PATH.
+        manifest_path: Path to the JSON manifest. Defaults to DEFAULT_MANIFEST_PATH.
+
+    Returns:
+        dict: The loaded and validated manifest metadata.
+
+    Raises:
+        FileNotFoundError: If the artifact or manifest file does not exist.
+        ValueError: If the manifest is malformed, missing required keys, or the checksum mismatches.
+    """
+    m_path = Path(manifest_path) if manifest_path is not None else DEFAULT_MANIFEST_PATH
+    if not m_path.exists():
+        raise FileNotFoundError(f"Model manifest file not found: {m_path.name}")
+
+    try:
+        with open(m_path, "r", encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception as err:
+        raise ValueError(f"Malformed model manifest JSON: {type(err).__name__}") from err
+
+    if not isinstance(manifest, dict):
+        raise ValueError("Model manifest must be a JSON object.")
+
+    required_keys = ["sha256", "model_identifier", "file_size_bytes"]
+    for k in required_keys:
+        if k not in manifest:
+            raise ValueError(f"Model manifest missing required key: '{k}'")
+
+    expected_sha256 = manifest["sha256"]
+    if not isinstance(expected_sha256, str) or len(expected_sha256) != 64:
+        raise ValueError("Model manifest contains an invalid SHA-256 format.")
+
+    target_path = Path(model_path) if model_path is not None else DEFAULT_MODEL_PATH
+    if not target_path.exists():
+        raise FileNotFoundError(f"Model artifact file not found: {target_path.name}")
+
+    # Compute actual SHA-256 checksum
+    hasher = hashlib.sha256()
+    with open(target_path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    actual_sha256 = hasher.hexdigest().lower()
+
+    if actual_sha256 != expected_sha256.lower():
+        raise ValueError(
+            f"Model artifact integrity check failed: SHA-256 checksum mismatch "
+            f"(expected {expected_sha256[:8]}..., got {actual_sha256[:8]}...)"
+        )
+
+    actual_size = target_path.stat().st_size
+    expected_size = manifest.get("file_size_bytes")
+    if expected_size is not None and actual_size != expected_size:
+        raise ValueError(
+            f"Model artifact integrity check failed: file size mismatch "
+            f"(expected {expected_size} bytes, got {actual_size} bytes)"
+        )
+
+    return manifest
+
+
+def generate_model_manifest(
+    model_path: Path | str | None = None,
+    output_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Generate or update the version-controlled model manifest for the given model artifact.
+
+    Args:
+        model_path: Path to the serialized model artifact (.joblib). Defaults to DEFAULT_MODEL_PATH.
+        output_path: Path to the output manifest JSON file. Defaults to DEFAULT_MANIFEST_PATH.
+
+    Returns:
+        dict: The newly generated manifest dictionary.
+    """
+    target_path = Path(model_path) if model_path is not None else DEFAULT_MODEL_PATH
+    if not target_path.exists():
+        raise FileNotFoundError(f"Model artifact not found at {target_path}")
+
+    hasher = hashlib.sha256()
+    with open(target_path, "rb") as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    sha256_hex = hasher.hexdigest().lower()
+    size_bytes = target_path.stat().st_size
+
+    manifest = {
+        "manifest_schema_version": "1.0.0",
+        "artifact_name": target_path.name,
+        "relative_path": str(target_path.relative_to(ROOT)) if target_path.is_relative_to(ROOT) else str(target_path),
+        "model_identifier": "hybrid_logistic_regression",
+        "schema_version": "v1",
+        "file_size_bytes": size_bytes,
+        "sha256": sha256_hex,
+        "estimator_type": "sklearn.pipeline.Pipeline",
+        "pipeline_steps": ["preprocess", "classifier"],
+        "compatibility": {
+            "python": ">=3.10,<3.14",
+            "scikit_learn": ">=1.4,<1.8",
+            "joblib": ">=1.3",
+        },
+        "training_context": {
+            "dataset": "data/synthetic_applicants.csv",
+            "training_seed": 2026,
+            "train_size": 8000,
+            "synthetic_demonstration_notice": (
+                "This model was trained on synthetic data for educational demonstration only. "
+                "It is not validated for real borrowers and must not be used to make credit decisions."
+            ),
+        },
+    }
+
+    dest_path = Path(output_path) if output_path is not None else DEFAULT_MANIFEST_PATH
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
+
+    return manifest
+
+
+def load_saved_model(
+    model_path: Path | str | None = None,
+    verify_integrity: bool = False,
+    manifest_path: Path | str | None = None,
+) -> Pipeline:
     """Load the serialized hybrid pipeline and ensure scikit-learn attribute compatibility.
 
     scikit-learn 1.8 removed LogisticRegression.multi_class from the public
@@ -68,6 +201,9 @@ def load_saved_model(model_path: Path | str | None = None) -> Pipeline:
     expect the attribute. Restores it if missing.
     """
     path = Path(model_path) if model_path is not None else DEFAULT_MODEL_PATH
+    if verify_integrity:
+        verify_model_artifact_integrity(model_path=path, manifest_path=manifest_path)
+
     if not path.exists():
         raise FileNotFoundError(f"Saved model artifact not found at {path}. Run `python train.py` first.")
 

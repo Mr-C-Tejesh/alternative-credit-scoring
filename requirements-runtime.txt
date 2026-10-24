@@ -1,0 +1,14 @@
+# =============================================================================
+# Direct Runtime Dependencies for Alternative Credit Scoring API Microservice
+# =============================================================================
+# Explicit, tested version constraints ensuring Python 3.12 compatibility
+# and deserialization stability for the scikit-learn hybrid logistic pipeline.
+
+numpy>=2.0.0
+pandas>=2.0.0
+scikit-learn>=1.4.0,<1.8.0
+joblib>=1.3.0
+fastapi>=0.110.0,<1.0.0
+pydantic>=2.6.0,<3.0.0
+uvicorn>=0.28.0,<1.0.0
+prometheus-client>=0.20.0,<1.0.0

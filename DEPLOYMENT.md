@@ -13,19 +13,19 @@ For future hosted demonstration (e.g. Streamlit Community Cloud, containerized s
 ### Prerequisites:
 - **Operating Environment:** Linux (Ubuntu 22.04+ or Debian 12+) or container runtime (Docker / OCI).
 - **Python Runtime:** Python `3.10`–`3.13` (tested locally on Python `3.13.7` and configured for Python `3.12` on `ubuntu-latest` CI runner).
-- **Dependency Constraints:** The project uses version range constraints declared in `requirements.txt`:
-  ```
-  numpy>=2.0
-  pandas>=2.0
-  scikit-learn>=1.4,<1.8
-  matplotlib>=3.8
-  joblib>=1.3
-  streamlit>=1.35
-  fastapi>=0.110
-  pydantic>=2.6
-  uvicorn>=0.28
-  prometheus-client>=0.20.0
-  ```
+- **Dependency Separation & Constraints:**
+  - **API Serving Runtime (`requirements-runtime.txt`):** Minimal set of direct dependencies needed for containerized inference:
+    ```text
+    numpy>=2.0.0
+    pandas>=2.0.0
+    scikit-learn>=1.4.0,<1.8.0
+    joblib>=1.3.0
+    fastapi>=0.110.0,<1.0.0
+    pydantic>=2.6.0,<3.0.0
+    uvicorn>=0.28.0,<1.0.0
+    prometheus-client>=0.20.0,<1.0.0
+    ```
+  - **Development, UI & Analysis (`requirements.txt`):** Includes `-r requirements-runtime.txt` plus `matplotlib>=3.8`, `streamlit>=1.35`, and `httpx>=0.27.0`.
 - **Port:** Default Streamlit port `8501`, API port `8000`.
 
 ---
@@ -56,9 +56,9 @@ If `models/hybrid_logistic_regression.joblib` is absent, the application halts g
 
 ---
 
-## 4. Containerization Reference (Example Dockerfile)
+## 4. Containerization Reference (API Serving Dockerfile)
 
-For teams containerizing this prototype for internal evaluation, the following minimal pattern is recommended:
+The repository provides a lean, production-ready inference container build configured in `Dockerfile`:
 
 ```dockerfile
 FROM python:3.12-slim
@@ -69,22 +69,33 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
+# Create unprivileged system user and group
+RUN groupadd -g 10001 appgroup && \
+    useradd -u 10001 -g appgroup -s /sbin/nologin -d /app appuser
+
+# Install dedicated lean runtime dependencies and verify consistency
+COPY requirements-runtime.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements-runtime.txt && \
+    pip check
 
-# Copy application files and pre-trained models
-COPY app.py inference_helper.py validation.py risk_scoring.py explainability.py ./
-COPY models/ ./models/
+# Copy application files and pre-trained models with manifest
+COPY api.py inference_helper.py validation.py risk_scoring.py explainability.py ./
+COPY models/hybrid_logistic_regression.joblib ./models/hybrid_logistic_regression.joblib
+COPY models/model_manifest.json ./models/model_manifest.json
 
-# Expose Streamlit port
-EXPOSE 8501
+# Grant ownership to unprivileged user
+RUN chown -R appuser:appgroup /app
+
+USER appuser
+
+EXPOSE 8000
 
 # Self-contained healthcheck using Python standard library (no external curl package required)
-HEALTHCHECK CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
-ENTRYPOINT ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+ENTRYPOINT ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
 
 ---
@@ -114,3 +125,35 @@ When deploying the inference API (`api.py`) in containerized or staging environm
    - Operational metrics (`http_requests_total`, `http_request_duration_seconds`, `prediction_outcomes_total`, `model_ready`) verify process responsiveness, endpoint latency, and HTTP status distributions.
    - They provide **no evidence** of statistical model accuracy, probability calibration, or real-world borrower creditworthiness.
    - Real-world validation requires longitudinal tracking of actual loan default outcomes after maturation and independent fairness/DPDP audits.
+
+---
+
+## 7. Model Artifact Integrity Verification & Supply-Chain Controls
+
+To guard against corrupted deployments, mismatched weights, or silent file tampering, the inference service enforces cryptographic integrity verification at container startup:
+
+1. **Version-Controlled Artifact Manifest (`models/model_manifest.json`):**
+   - Records the SHA-256 checksum (`515a9caeb1d0ca9281007724e17f3f3ee846f0b201f7b69f0f72355eb4f14926`), exact byte size (`5994`), model identifier (`hybrid_logistic_regression`), and feature schema version (`v1`).
+   - Declares verified compatibility bounds: Python `>=3.10,<3.14`, scikit-learn `>=1.4.0,<1.8.0`.
+   - Explicitly includes the required synthetic-data educational demonstration notice.
+
+2. **Lifespan Startup Verification (`verify_model_artifact_integrity()`):**
+   - Executed automatically during FastAPI application lifespan before any model deserialization occurs.
+   - Verifies that both the manifest and artifact exist, parses metadata, and validates the SHA-256 digest and file size in constant time.
+   - **Safe Readiness Failure:** If the artifact is missing, corrupted, or exhibits a checksum mismatch, startup catches the exception without crashing the web process:
+     - `/health` remains `200 OK` (liveness probe passes; container is alive).
+     - `/ready` returns `503 Service Unavailable` (`{"status": "unready", "model_loaded": false}`).
+     - `/v1/predict` returns `503 Service Unavailable` (`{"detail": "Model is not loaded or ready to serve predictions."}`).
+     - **Path & Traceback Sanitization:** Error responses never leak local filesystem paths or stack traces to HTTP clients.
+
+3. **Authorized Manifest Regeneration Workflow:**
+   - When retraining or replacing the model through an authorized workflow, regenerate the manifest using the built-in helper:
+     ```bash
+     python -c "import inference_helper; manifest = inference_helper.generate_model_manifest(); print(f'Manifest regenerated: SHA-256 {manifest[\"sha256\"]}')"
+     ```
+   - Commit both the updated artifact and the regenerated manifest together in version control.
+
+4. **Supply-Chain Trust Limitations:**
+   - A repository-local checksum manifest detects accidental file modification, truncated downloads, or deployment version mismatches.
+   - Because the manifest and model artifact reside in the same source repository, this alone is **not** an independently signed cryptographic supply-chain trust mechanism (such as Cosign, Sigstore, or an external hardware security module PKI).
+   - Real-world credit systems require signed container provenance, immutable external artifact registries, and rigorous hardware-backed key management.

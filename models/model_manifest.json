@@ -1,0 +1,25 @@
+{
+  "manifest_schema_version": "1.0.0",
+  "artifact_name": "hybrid_logistic_regression.joblib",
+  "relative_path": "models/hybrid_logistic_regression.joblib",
+  "model_identifier": "hybrid_logistic_regression",
+  "schema_version": "v1",
+  "file_size_bytes": 5994,
+  "sha256": "515a9caeb1d0ca9281007724e17f3f3ee846f0b201f7b69f0f72355eb4f14926",
+  "estimator_type": "sklearn.pipeline.Pipeline",
+  "pipeline_steps": [
+    "preprocess",
+    "classifier"
+  ],
+  "compatibility": {
+    "python": ">=3.10,<3.14",
+    "scikit_learn": ">=1.4,<1.8",
+    "joblib": ">=1.3"
+  },
+  "training_context": {
+    "dataset": "data/synthetic_applicants.csv",
+    "training_seed": 2026,
+    "train_size": 8000,
+    "synthetic_demonstration_notice": "This model was trained on synthetic data for educational demonstration only. It is not validated for real borrowers and must not be used to make credit decisions."
+  }
+}

@@ -25,6 +25,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Check dependency consistency
+        run: |
+          python -m pip check
+
       - name: Run unit test suite
         run: |
           python -m unittest discover -s tests -v
@@ -42,11 +46,34 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Build Docker image
+      - name: Build Docker image with lean runtime dependencies
         run: |
           docker build -t alternative-credit-scoring-api:ci-test .
 
-      - name: Run container
+      - name: Verify development-only packages are absent from container
+        run: |
+          echo "Checking Streamlit absence..."
+          docker run --rm alternative-credit-scoring-api:ci-test python -c "import streamlit" 2>&1 && exit 1 || echo "Streamlit is absent as expected."
+          echo "Checking Matplotlib absence..."
+          docker run --rm alternative-credit-scoring-api:ci-test python -c "import matplotlib" 2>&1 && exit 1 || echo "Matplotlib is absent as expected."
+
+      - name: Test model artifact integrity failure on temporary container
+        run: |
+          echo "tampered_compromised_artifact" > /tmp/corrupted_model.joblib
+          docker run -d \
+            --name test-corrupted-container \
+            -v /tmp/corrupted_model.joblib:/app/models/hybrid_logistic_regression.joblib:ro \
+            -p 127.0.0.1:18766:8000 \
+            alternative-credit-scoring-api:ci-test
+          python scripts/test_container_runtime.py --port 18766 --test-integrity-failure
+
+      - name: Stop and clean up temporary corrupted container
+        if: always()
+        run: |
+          docker stop test-corrupted-container || true
+          docker rm -f test-corrupted-container || true
+
+      - name: Run healthy container
         run: |
           docker run -d \
             --name test-api-container \

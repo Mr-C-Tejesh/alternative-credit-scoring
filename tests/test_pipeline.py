@@ -4464,5 +4464,276 @@ class TestAPIObservabilityAndMetrics(unittest.TestCase):
             self.assertIn('model_info{model="hybrid_logistic_regression",schema_version="v1"} 1.0', unready_text)
 
 
+# ---------------------------------------------------------------------------
+# Phase 12: Lean API Dependencies, Reproducible Builds & Artifact Integrity
+# ---------------------------------------------------------------------------
+
+class TestModelArtifactIntegrityAndSupplyChain(unittest.TestCase):
+    """Automated tests for model artifact SHA-256 integrity verification, safe readiness, and lean dependencies."""
+
+    def setUp(self):
+        self.valid_applicant_payload = {
+            "age_years": 32,
+            "monthly_income_inr": 55000.0,
+            "employment_tenure_years": 4.5,
+            "debt_to_income_ratio": 0.28,
+            "existing_loan_count": 1,
+            "credit_utilization_ratio": 0.35,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 720.0,
+            "utility_payment_timeliness": 0.95,
+            "rental_payment_timeliness": 0.92,
+            "digital_payment_regularity": 0.88,
+            "cashflow_stability_index": 0.75,
+            "alternative_history_months": 18,
+        }
+
+    def test_valid_model_artifact_and_manifest_checksum(self):
+        """Standard model artifact matches its manifest checksum, size, and metadata."""
+        manifest = inference_helper.verify_model_artifact_integrity()
+        self.assertIsInstance(manifest, dict)
+        self.assertEqual(manifest["model_identifier"], "hybrid_logistic_regression")
+        self.assertEqual(manifest["schema_version"], "v1")
+        self.assertEqual(manifest["file_size_bytes"], 5994)
+        self.assertEqual(len(manifest["sha256"]), 64)
+        self.assertEqual(manifest["sha256"], "515a9caeb1d0ca9281007724e17f3f3ee846f0b201f7b69f0f72355eb4f14926")
+        self.assertIn("synthetic data", manifest["training_context"]["synthetic_demonstration_notice"])
+
+        # Loading with verify_integrity=True must succeed
+        model = inference_helper.load_saved_model(verify_integrity=True)
+        self.assertIsNotNone(model)
+
+    def test_missing_model_artifact_fails_integrity(self):
+        """Missing model artifact raises FileNotFoundError with sanitized filename."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_artifact = Path(tmp_dir) / "missing_model.joblib"
+            with self.assertRaises(FileNotFoundError) as ctx:
+                inference_helper.verify_model_artifact_integrity(model_path=fake_artifact)
+            self.assertIn("missing_model.joblib", str(ctx.exception))
+
+    def test_missing_manifest_fails_integrity(self):
+        """Missing manifest raises FileNotFoundError with sanitized filename."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fake_manifest = Path(tmp_dir) / "missing_manifest.json"
+            with self.assertRaises(FileNotFoundError) as ctx:
+                inference_helper.verify_model_artifact_integrity(manifest_path=fake_manifest)
+            self.assertIn("missing_manifest.json", str(ctx.exception))
+
+    def test_malformed_manifest_fails_integrity(self):
+        """Malformed JSON syntax, invalid structures, or missing required fields raise ValueError."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+
+            # 1. Corrupt JSON syntax
+            corrupt_file = tmp_path / "corrupt.json"
+            corrupt_file.write_text("{invalid_json: true", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                inference_helper.verify_model_artifact_integrity(manifest_path=corrupt_file)
+            self.assertIn("Malformed model manifest JSON", str(ctx.exception))
+
+            # 2. JSON list instead of dictionary
+            list_file = tmp_path / "list.json"
+            list_file.write_text("[]", encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                inference_helper.verify_model_artifact_integrity(manifest_path=list_file)
+            self.assertIn("Model manifest must be a JSON object", str(ctx.exception))
+
+            # 3. Missing required sha256 key
+            missing_sha = tmp_path / "missing_sha.json"
+            missing_sha.write_text(json.dumps({"model_identifier": "test", "file_size_bytes": 100}), encoding="utf-8")
+            with self.assertRaises(ValueError) as ctx:
+                inference_helper.verify_model_artifact_integrity(manifest_path=missing_sha)
+            self.assertIn("missing required key: 'sha256'", str(ctx.exception))
+
+            # 4. Invalid sha256 format (not 64 characters)
+            bad_format = tmp_path / "bad_format.json"
+            bad_format.write_text(
+                json.dumps({"sha256": "tooshort", "model_identifier": "test", "file_size_bytes": 100}),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                inference_helper.verify_model_artifact_integrity(manifest_path=bad_format)
+            self.assertIn("invalid SHA-256 format", str(ctx.exception))
+
+    def test_deliberate_checksum_mismatch_fails_integrity(self):
+        """Checksum mismatch or file size mismatch raises ValueError and prevents loading."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+
+            # 1. Checksum mismatch
+            mismatch_manifest = tmp_path / "mismatch_manifest.json"
+            mismatch_manifest.write_text(
+                json.dumps({
+                    "sha256": "0" * 64,
+                    "model_identifier": "hybrid_logistic_regression",
+                    "file_size_bytes": 5994,
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                inference_helper.verify_model_artifact_integrity(manifest_path=mismatch_manifest)
+            self.assertIn("SHA-256 checksum mismatch", str(ctx.exception))
+
+            # 2. Size mismatch
+            size_mismatch = tmp_path / "size_mismatch.json"
+            size_mismatch.write_text(
+                json.dumps({
+                    "sha256": "515a9caeb1d0ca9281007724e17f3f3ee846f0b201f7b69f0f72355eb4f14926",
+                    "model_identifier": "hybrid_logistic_regression",
+                    "file_size_bytes": 999999,
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                inference_helper.verify_model_artifact_integrity(manifest_path=size_mismatch)
+            self.assertIn("file size mismatch", str(ctx.exception))
+
+    def test_readiness_probe_fails_safely_when_integrity_fails(self):
+        """When artifact integrity fails, /health remains 200, /ready returns 503, and zero paths leak."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bad_manifest = Path(tmp_dir) / "spoofed_manifest.json"
+            bad_manifest.write_text(
+                json.dumps({
+                    "sha256": "f" * 64,
+                    "model_identifier": "hybrid_logistic_regression",
+                    "file_size_bytes": 5994,
+                }),
+                encoding="utf-8",
+            )
+
+            # Create app instance with spoofed manifest
+            compromised_app = api.create_app(manifest_path=bad_manifest)
+            with TestClient(compromised_app) as client:
+                # 1. Liveness /health must remain 200 OK
+                resp_health = client.get("/health")
+                self.assertEqual(resp_health.status_code, 200)
+                self.assertEqual(resp_health.json()["status"], "healthy")
+
+                # 2. Readiness /ready must fail with 503 Service Unavailable
+                resp_ready = client.get("/ready")
+                self.assertEqual(resp_ready.status_code, 503)
+                ready_data = resp_ready.json()
+                self.assertEqual(ready_data["status"], "unready")
+                self.assertFalse(ready_data["model_loaded"])
+                self.assertIsNone(ready_data["model_identifier"])
+                self.assertIsNone(compromised_app.state.model)
+
+                # 3. Security: Ensure NO internal paths or stack traces leak to HTTP clients
+                ready_body = resp_ready.text
+                self.assertNotIn("/Users/", ready_body)
+                self.assertNotIn("/app/", ready_body)
+                self.assertNotIn("/tmp/", ready_body)
+                self.assertNotIn("Traceback", ready_body)
+                self.assertNotIn("spoofed_manifest.json", ready_body)
+
+                # 4. Predict endpoint returns 503 with generic message
+                resp_pred = client.post("/v1/predict", json=self.valid_applicant_payload)
+                self.assertEqual(resp_pred.status_code, 503)
+                self.assertIn("Model service is not ready to process predictions.", resp_pred.text)
+                self.assertNotIn("/Users/", resp_pred.text)
+
+    def test_model_loaded_only_after_integrity_verification_succeeds(self):
+        """Model loader callable is never invoked if integrity validation fails."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bad_manifest = Path(tmp_dir) / "bad_manifest.json"
+            bad_manifest.write_text(json.dumps({"sha256": "0" * 64, "model_identifier": "m", "file_size_bytes": 1}), encoding="utf-8")
+
+            mock_loader = MagicMock()
+            app = api.create_app(manifest_path=bad_manifest, model_loader=mock_loader)
+            with TestClient(app) as client:
+                # Loader must NEVER be called because integrity validation failed beforehand
+                mock_loader.assert_not_called()
+                self.assertFalse(app.state.is_ready)
+
+            # Conversely, with valid manifest, loader is called once
+            real_model = inference_helper.load_saved_model()
+            valid_loader = MagicMock(return_value=real_model)
+            valid_app = api.create_app(model_loader=valid_loader)
+            with TestClient(valid_app) as client:
+                valid_loader.assert_called_once()
+                self.assertTrue(valid_app.state.is_ready)
+
+    def test_integrity_failure_records_unready_metric_and_preserves_isolation(self):
+        """Integrity failure accurately records model_ready=0 gauge and outcome='service_unready'."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            bad_manifest = Path(tmp_dir) / "bad.json"
+            bad_manifest.write_text(json.dumps({"sha256": "0" * 64, "model_identifier": "m", "file_size_bytes": 1}), encoding="utf-8")
+
+            app = api.create_app(manifest_path=bad_manifest)
+            with TestClient(app) as client:
+                # Prediction while unready records outcome="service_unready"
+                client.post("/v1/predict", json=self.valid_applicant_payload)
+
+                metrics_body = client.get("/metrics").text
+                self.assertIn('model_ready{model="hybrid_logistic_regression"} 0.0', metrics_body)
+                self.assertIn('prediction_outcomes_total{model="hybrid_logistic_regression",outcome="service_unready"} 1.0', metrics_body)
+
+    def test_runtime_requirements_file_excludes_development_packages(self):
+        """requirements-runtime.txt contains strictly lean serving dependencies without dev/UI tools."""
+        runtime_req_path = inference_helper.ROOT / "requirements-runtime.txt"
+        self.assertTrue(runtime_req_path.exists(), "requirements-runtime.txt must exist in project root")
+
+        content = runtime_req_path.read_text(encoding="utf-8")
+        lines = [line.strip().lower() for line in content.splitlines() if line.strip() and not line.startswith("#")]
+
+        # Dev / UI / plotting packages that MUST be absent
+        forbidden_packages = [
+            "streamlit",
+            "matplotlib",
+            "httpx",
+            "pytest",
+            "seaborn",
+        ]
+        for forbidden in forbidden_packages:
+            self.assertFalse(
+                any(line.startswith(forbidden) for line in lines),
+                f"Forbidden package '{forbidden}' must not be present in requirements-runtime.txt",
+            )
+
+        # Essential runtime packages that MUST be present
+        required_packages = [
+            "fastapi",
+            "uvicorn",
+            "prometheus-client",
+            "numpy",
+            "pandas",
+            "scikit-learn",
+            "joblib",
+            "pydantic",
+        ]
+        for required in required_packages:
+            self.assertTrue(
+                any(line.startswith(required) for line in lines),
+                f"Required runtime dependency '{required}' missing from requirements-runtime.txt",
+            )
+
+    def test_pip_check_dependency_consistency(self):
+        """pip check must confirm no broken dependencies or unmet requirements in active environment."""
+        proc = subprocess.run(
+            [sys.executable, "-m", "pip", "check"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, f"pip check failed: {proc.stdout}\n{proc.stderr}")
+        self.assertIn("No broken requirements found", proc.stdout)
+
+    def test_generate_model_manifest_creates_valid_manifest(self):
+        """generate_model_manifest must accurately hash an artifact and create a valid schema manifest."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_manifest = Path(tmp_dir) / "generated_manifest.json"
+            manifest = inference_helper.generate_model_manifest(output_path=out_manifest)
+
+            self.assertTrue(out_manifest.exists())
+            self.assertEqual(manifest["model_identifier"], "hybrid_logistic_regression")
+            self.assertEqual(manifest["sha256"], "515a9caeb1d0ca9281007724e17f3f3ee846f0b201f7b69f0f72355eb4f14926")
+            self.assertEqual(manifest["file_size_bytes"], 5994)
+
+            # Verification against newly generated manifest must succeed
+            verified = inference_helper.verify_model_artifact_integrity(manifest_path=out_manifest)
+            self.assertEqual(verified["sha256"], manifest["sha256"])
+
+
 if __name__ == "__main__":
     unittest.main()

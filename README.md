@@ -57,14 +57,19 @@ source .venv/bin/activate
 # On Windows (PowerShell):
 # .venv\Scripts\Activate.ps1
 
-# Upgrade pip and install dependencies
+# Upgrade pip
 python -m pip install --upgrade pip
+
+# Option 1: Full development, analysis, Streamlit app, and test suite
 pip install -r requirements.txt
+
+# Option 2: Lean API runtime microservice only (minimal container footprint)
+pip install -r requirements-runtime.txt
 ```
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 243 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, HTTP inference API contracts, and privacy-safe Prometheus runtime observability:
+The test suite contains 254 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, HTTP inference API contracts, privacy-safe Prometheus runtime observability, and model artifact SHA-256 integrity verification:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -480,10 +485,49 @@ It is critical to distinguish between three fundamentally different layers of sy
    - Measures true discrimination (ROC-AUC, Gini, KS) and probability calibration (ECE, Brier score) against **ground-truth loan default outcomes** over a 12-month performance window.
    - *Limitation:* Cannot be computed in real time at inference. Operational uptime and low latency are purely operational telemetry and must never be misconstrued as evidence of model validity or real-world creditworthiness.
 
-### E. Containerization & Deployment Execution
+### E. Lean API Dependencies & Model Artifact Integrity Verification
+
+Phase 12 optimizes the containerized serving footprint and establishes model artifact integrity verification:
+
+#### 1. Lean Runtime Dependency Surface
+- **Separation of Concerns:** The API serving container installs strictly from `requirements-runtime.txt` rather than the complete workspace stack (`requirements.txt`).
+- **Surface Reduction:** Heavy development and visualization packages—specifically `streamlit` (and its transitive tree: Altair, PyDeck, PyArrow, Pillow, Tornado) and `matplotlib` (and its rendering stack)—are excluded from the container image.
+- **Dependency Consistency:** Every build runs `pip check` inside the Docker image to ensure zero broken dependencies or unmet transitive requirements.
+
+#### 2. Model Artifact Integrity Verification (`models/model_manifest.json`)
+Before loading the serialized pipeline into memory, `api.py` invokes `verify_model_artifact_integrity()` from `inference_helper.py` to validate `models/hybrid_logistic_regression.joblib` against its version-controlled manifest:
+
+| Manifest Field | Recorded Benchmark Value | Description |
+| :--- | :--- | :--- |
+| `model_identifier` | `hybrid_logistic_regression` | Active pipeline identifier |
+| `schema_version` | `v1` | Feature schema specification version |
+| `sha256` | `515a9caeb1d0ca9281007724e17f3f3ee846f0b201f7b69f0f72355eb4f14926` | SHA-256 cryptographic digest of model file |
+| `file_size_bytes` | `5994` | Exact serialized file size in bytes |
+| `scikit_learn` | `>=1.4,<1.8` | Estimator serialization compatibility constraint |
+| `python` | `>=3.10,<3.14` | Compatible Python runtime versions |
+
+#### 3. Safe Readiness Failure Behavior
+If the manifest is missing, malformed, or the model checksum mismatches:
+- **Liveness Preserved:** `GET /health` continues returning `200 OK` (process is responsive).
+- **Readiness Fails Safely:** `GET /ready` returns `503 Service Unavailable` with `model_loaded: false`.
+- **Zero Information Leakage:** Generic HTTP error messages are returned. Local filesystem paths (`/app/`, `/tmp/`, `/Users/`) and Python tracebacks are strictly suppressed.
+- **Predict Guarded:** `POST /v1/predict` rejects requests with `503 Service Unavailable` and records `prediction_outcomes_total{outcome="service_unready"}`.
+
+#### 4. How to Regenerate the Manifest Following an Authorized Model Update
+When an authorized retraining run completes and produces an updated model artifact:
+```bash
+python -c "import inference_helper; inference_helper.generate_model_manifest()"
+```
+This recalculates the SHA-256 hash, records the new byte size, and writes a normalized `models/model_manifest.json`.
+
+> [!WARNING]
+> **Supply-Chain Trust Limitation:**
+> A version-controlled checksum manifest protects against accidental corruption, uncommitted local edits, and mismatched files. However, when the manifest and model artifact reside in the same Git repository, this does **not** constitute a cryptographic external supply-chain signature (such as Sigstore/Cosign or in-toto attestations).
+
+### F. Containerization & Deployment Execution
 
 ```bash
-# Build the reproducible container image
+# Build the reproducible container image using lean runtime requirements
 docker build -t alternative-credit-scoring-api:latest .
 
 # Run the container bound strictly to loopback interface (least-privilege appuser)
@@ -566,6 +610,7 @@ alternative-credit-scoring/
 ├── models/
 │   ├── hybrid_hist_gradient_boosting.joblib
 │   ├── hybrid_logistic_regression.joblib
+│   ├── model_manifest.json      # Cryptographic SHA-256 manifest and compatibility metadata
 │   └── traditional_baseline.joblib
 ├── reports/
 │   ├── ablation_robustness/     # Multi-seed ablation metrics, deltas, plot, and report
@@ -580,7 +625,7 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 243 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 254 comprehensive automated unit and AppTest tests
 ├── scripts/
 │   └── test_container_runtime.py # CI & local container runtime smoke test suite
 ├── .dockerignore                # Container build context exclusions
@@ -596,7 +641,8 @@ alternative-credit-scoring/
 ├── risk_scoring.py              # PDO score transformation and risk band mapping
 ├── explainability.py            # Exact additive log-odds decomposition for hybrid LR
 ├── inference_helper.py          # Shared applicant row builder and inference boundary
-├── requirements.txt             # Verified runtime dependencies
+├── requirements-runtime.txt     # Dedicated lean runtime dependencies for serving container
+├── requirements.txt             # Full development, UI, and test suite dependencies
 ├── MODEL_CARD.md                # Comprehensive model card and technical governance
 ├── DEPLOYMENT.md               # Future deployment and environment readiness notes
 └── README.md                    # Project documentation

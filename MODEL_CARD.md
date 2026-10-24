@@ -126,8 +126,14 @@ A production-style HTTP inference microservice (`api.py`) serves the serialized 
   - Scrapes to `/metrics` are bypassed by middleware to eliminate self-observation feedback loops.
   - Each app instance created via `create_app()` maintains an isolated `CollectorRegistry` to prevent cross-test state pollution.
 - **Containerization & Least-Privilege Execution:**
-  - Packaged via a multi-stage/lean `Dockerfile` running on `python:3.12-slim` under an unprivileged system user (`appuser:appgroup`).
+  - Packaged via a lean `Dockerfile` running on `python:3.12-slim` under an unprivileged system user (`appuser:appgroup`).
   - Container health checks leverage the Python standard library `urllib.request` without external shell or curl dependencies.
+  - Development and analysis dependencies (e.g., Streamlit, Matplotlib) are excluded from the serving container via dedicated `requirements-runtime.txt`.
+- **Model Artifact Integrity & Manifest Verification:**
+  - The served model artifact (`models/hybrid_logistic_regression.joblib`) is verified against a version-controlled manifest (`models/model_manifest.json`) recording SHA-256 checksum (`515a9caeb1d0ca9281007724e17f3f3ee846f0b201f7b69f0f72355eb4f14926`), artifact size (5,994 bytes), model identifier, and schema version.
+  - Verification executes automatically during application startup lifespan before loading the pipeline into memory.
+  - Tampering, corruption, or missing manifests fail readiness safely (HTTP 503, `model_loaded: false`) without leaking filesystem paths or tracebacks, while `/health` remains 200 (liveness).
+  - **Supply-Chain Trust Limitation:** The version-controlled manifest protects against accidental file corruption, incomplete transfers, or mismatched weights during container packaging. Because the manifest and artifact reside in the same repository, this check does not constitute an external cryptographic supply-chain signing or provenance attestation mechanism (e.g., Sigstore/Cosign).
 - **Serving Governance & Limitations:**
   - The API exposes mathematical predictions from a model fitted exclusively on synthetic data.
   - **Telemetry vs. Predictive Validity:** Operational metrics measure web server throughput, latency, and HTTP status codes. They do **not** provide evidence of model predictive accuracy, calibration stability, or real-world creditworthiness. Input drift must be evaluated via feature-level distribution tests (Phase 09), while model predictive performance strictly requires observed ground-truth default outcomes after loan maturation.

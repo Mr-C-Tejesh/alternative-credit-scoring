@@ -394,6 +394,59 @@ def test_metrics_scrape(base_url: str) -> None:
     print("[PASS] GET /metrics returned HTTP 200 with all metric families, valid counts, and zero data leakage")
 
 
+def test_integrity_failure(base_url: str) -> None:
+    """Verify that a container with an integrity-compromised model fails readiness safely without leaking paths."""
+    print(f"[*] Testing integrity failure behavior against {base_url}...")
+
+    # 1. Liveness /health must return 200
+    status_code, body = _make_http_request(f"{base_url}/health", method="GET")
+    if status_code != 200 or not isinstance(body, dict) or body.get("status") != "healthy":
+        raise RuntimeError(f"Expected HTTP 200 from /health on unready container, got {status_code}: {body}")
+    print("[PASS] Liveness /health returned HTTP 200 on integrity-compromised container")
+
+    # 2. Readiness /ready must fail with 503
+    status_code, body = _make_http_request(f"{base_url}/ready", method="GET")
+    if status_code != 503:
+        raise RuntimeError(f"Expected HTTP 503 from /ready on integrity-compromised container, got {status_code}: {body}")
+    if not isinstance(body, dict) or body.get("status") != "unready" or body.get("model_loaded") is not False:
+        raise ValueError(f"Unexpected /ready payload: {body}")
+    print("[PASS] Readiness /ready returned HTTP 503 (model_loaded=False, status='unready')")
+
+    # 3. Ensure no local filesystem paths or tracebacks are leaked
+    body_str = json.dumps(body) if isinstance(body, (dict, list)) else str(body)
+    forbidden_tokens = ["/app/", "/Users/", "/tmp/", "Traceback", "File \""]
+    for token in forbidden_tokens:
+        if token in body_str:
+            raise ValueError(f"Readiness error body leaked sensitive path or traceback: '{token}'")
+    print("[PASS] Security check: zero filesystem paths or stack traces leaked in error responses")
+
+    # 4. Predict /v1/predict must return 503
+    dummy_payload = {
+        "age_years": 32,
+        "monthly_income_inr": 55000.0,
+        "employment_tenure_years": 4.5,
+        "debt_to_income_ratio": 0.28,
+        "existing_loan_count": 1,
+        "credit_utilization_ratio": 0.35,
+        "prior_delinquencies_24m": 0,
+        "bureau_history_available": 1,
+        "bureau_score": 720.0,
+        "utility_payment_timeliness": 0.95,
+        "rental_payment_timeliness": 0.92,
+        "digital_payment_regularity": 0.88,
+        "cashflow_stability_index": 0.75,
+        "alternative_history_months": 18,
+    }
+    status_code, pred_body = _make_http_request(
+        f"{base_url}/v1/predict",
+        method="POST",
+        data=dummy_payload,
+    )
+    if status_code != 503:
+        raise RuntimeError(f"Expected HTTP 503 from /v1/predict on unready container, got {status_code}: {pred_body}")
+    print("[PASS] Prediction endpoint returned HTTP 503 on integrity-compromised container")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inference Container Runtime Smoke Test")
     parser.add_argument("--host", default="127.0.0.1", help="Target host (default: 127.0.0.1)")
@@ -401,9 +454,30 @@ def main() -> int:
     parser.add_argument("--container-name", default=None, help="Optional container name to inspect")
     parser.add_argument("--max-wait", type=float, default=30.0, help="Max wait seconds for probes (default: 30)")
     parser.add_argument("--interval", type=float, default=1.0, help="Retry interval in seconds (default: 1)")
+    parser.add_argument(
+        "--test-integrity-failure",
+        action="store_true",
+        help="Test safe readiness failure behavior on an unready/compromised container",
+    )
 
     args = parser.parse_args()
     base_url = f"http://{args.host}:{args.port}"
+
+    if args.test_integrity_failure:
+        print("================================================================================")
+        print(f"RUNNING INTEGRITY-FAILURE READINESS SMOKE TESTS AGAINST {base_url}")
+        print("================================================================================")
+        try:
+            # Bounded wait for container to be responsive
+            check_liveness(base_url, max_wait=args.max_wait, interval=args.interval)
+            test_integrity_failure(base_url)
+            print("================================================================================")
+            print("INTEGRITY FAILURE SMOKE TESTS PASSED (SAFE READINESS CONFIRMED)")
+            print("================================================================================")
+            return 0
+        except Exception as exc:
+            print(f"[FAIL] Integrity failure smoke test failed: {exc}", file=sys.stderr)
+            return 1
 
     print("================================================================================")
     print(f"RUNNING CONTAINER RUNTIME SMOKE TESTS AGAINST {base_url}")

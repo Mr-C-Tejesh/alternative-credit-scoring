@@ -35,10 +35,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 from sklearn.pipeline import Pipeline
 
 from inference_helper import (
+    DEFAULT_MANIFEST_PATH,
     DEFAULT_MODEL_PATH,
     InferenceResult,
     load_saved_model,
     run_inference_pipeline,
+    verify_model_artifact_integrity,
 )
 from risk_scoring import (
     DEFAULT_BASE_ODDS,
@@ -373,10 +375,12 @@ class APIMetrics:
 
 def create_app(
     model_path: Path | str | None = None,
+    manifest_path: Path | str | None = None,
     model: Pipeline | None = None,
     load_on_startup: bool = True,
     model_loader: Callable[..., Pipeline] | None = None,
     metrics_registry: CollectorRegistry | None = None,
+    enforce_integrity: bool = True,
 ) -> FastAPI:
     """Create and configure the FastAPI application instance."""
 
@@ -387,16 +391,27 @@ def create_app(
     async def lifespan(app: FastAPI):
         if app.state.model is None and load_on_startup:
             loader = app.state.model_loader or load_saved_model
-            target_path = app.state.model_path or DEFAULT_MODEL_PATH
+            target_path = getattr(app.state, "model_path", None) or DEFAULT_MODEL_PATH
+            target_manifest = getattr(app.state, "manifest_path", None) or DEFAULT_MANIFEST_PATH
             try:
                 logger.info("Initializing inference model from configured artifact...")
+                if getattr(app.state, "enforce_integrity", True):
+                    manifest = verify_model_artifact_integrity(
+                        model_path=target_path,
+                        manifest_path=target_manifest,
+                    )
+                    logger.info(
+                        "Model artifact integrity verified (SHA-256: %s..., model: %s).",
+                        manifest["sha256"][:8],
+                        manifest.get("model_identifier", "unknown"),
+                    )
                 loaded = loader(target_path)
                 app.state.model = loaded
                 app.state.is_ready = True
                 app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(1)
                 logger.info("Model loaded successfully into service state.")
             except Exception as err:
-                logger.error("Failed to load model artifact on startup: %s", type(err).__name__)
+                logger.error("Failed to load model artifact or verify integrity: %s", type(err).__name__)
                 app.state.model = None
                 app.state.is_ready = False
                 app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(0)
@@ -417,9 +432,11 @@ def create_app(
 
     # State initialization
     app.state.model_path = Path(model_path) if model_path is not None else None
+    app.state.manifest_path = Path(manifest_path) if manifest_path is not None else None
     app.state.model = model
     app.state.is_ready = model is not None
     app.state.model_loader = model_loader
+    app.state.enforce_integrity = enforce_integrity
     app.state.metrics = metrics
     app.state.metrics_registry = metrics.registry
 
