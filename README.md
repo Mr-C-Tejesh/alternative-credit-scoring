@@ -508,6 +508,8 @@ alternative-credit-scoring/
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
 │   └── test_pipeline.py         # 234 comprehensive automated unit and AppTest tests
+├── scripts/
+│   └── test_container_runtime.py # CI & local container runtime smoke test suite
 ├── .dockerignore                # Container build context exclusions
 ├── Dockerfile                   # Reproducible non-root container build (python:3.12-slim)
 ├── api.py                       # FastAPI HTTP inference service (/health, /ready, /v1/predict)

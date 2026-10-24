@@ -8,6 +8,7 @@ on:
 
 jobs:
   test:
+    name: Python Test Suite
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -27,3 +28,47 @@ jobs:
       - name: Run unit test suite
         run: |
           python -m unittest discover -s tests -v
+
+  container:
+    name: Container Build & Runtime Smoke Tests
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build Docker image
+        run: |
+          docker build -t alternative-credit-scoring-api:ci-test .
+
+      - name: Run container
+        run: |
+          docker run -d \
+            --name test-api-container \
+            --health-interval=2s \
+            --health-timeout=2s \
+            --health-retries=5 \
+            --health-start-period=1s \
+            -p 127.0.0.1:18765:8000 \
+            alternative-credit-scoring-api:ci-test
+
+      - name: Run container runtime smoke tests
+        run: |
+          python scripts/test_container_runtime.py --port 18765 --container-name test-api-container
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "=== Container logs ==="
+          docker logs test-api-container || true
+
+      - name: Stop and remove container
+        if: always()
+        run: |
+          docker stop test-api-container || true
+          docker rm -f test-api-container || true
