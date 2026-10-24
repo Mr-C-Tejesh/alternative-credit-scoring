@@ -26,10 +26,10 @@
 
 ## Executive Summary
 
-| Diagnostic Domain | Total Monitored | Status OK | Status WARNING | Status CRITICAL |
-| :--- | :---: | :---: | :---: | :---: |
-| **Monitored Predictor Features** | 14 | **14** | 0 | 0 |
-| **Model Score Distributions** | 3 | **3** | 0 | 0 |
+| Diagnostic Domain | Total Monitored | Status OK | Status WARNING | Status CRITICAL | Status INSUFFICIENT DATA |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Monitored Predictor Features** | 14 | **14** | 0 | 0 | 0 |
+| **Model Score Distributions** | 3 | **3** | 0 | 0 | 0 |
 
 In the default demonstration, the incoming batch represents the held-out test partition (2,000 rows) evaluated against the reference training partition (8,000 rows) under the identical seed-2026 stratified split. As expected for an independent, identically distributed partition from the same synthetic generator, all 14 features and all 3 model score distributions exhibit near-zero drift and remain well within operational tolerance.
 
@@ -66,7 +66,7 @@ The input batch and reference data passed all pre-scoring integrity checks:
 | `cashflow_stability_index` | alternative | 8.4% | 7.4% | -0.94 pp | 0.0036 | 0.0213 | 0.5031 | **OK** |
 | `alternative_history_months` | alternative | 0.0% | 0.0% | +0.00 pp | 0.0025 | 0.0176 | 0.6988 | **OK** |
 
-*Note: Missingness change is evaluated independently in percentage points (pp). PSI and two-sample KS statistics are computed exclusively on non-missing numeric values.*
+*Note: Missingness change is evaluated independently in percentage points (pp). PSI and two-sample KS statistics are computed exclusively on non-missing numeric values. When non-missing observations are absent or below the minimum sample threshold (n < 5), PSI and KS statistics are marked as N/A.*
 
 ---
 
@@ -83,7 +83,7 @@ Predicted default probabilities ($P(\text{default} = 1)$) were generated across 
 ### Score Percentile Summaries
 
 | Model & Partition | Min | P05 | P25 | P50 (Median) | P75 | P95 | Max |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Traditional baseline (Ref)** | 0.0004 | 0.0271 | 0.1050 | 0.2202 | 0.4008 | 0.7128 | 0.9926 |
 | **Traditional baseline (Batch)** | 0.0039 | 0.0263 | 0.1081 | 0.2107 | 0.3803 | 0.6917 | 0.9810 |
 | **Hybrid (traditional + alternative) (Ref)** | 0.0001 | 0.0029 | 0.0261 | 0.1285 | 0.4762 | 0.9201 | 0.9998 |
@@ -92,6 +92,10 @@ Predicted default probabilities ($P(\text{default} = 1)$) were generated across 
 | **Hybrid (HistGradientBoosting) (Batch)** | 0.0006 | 0.0043 | 0.0244 | 0.1043 | 0.4545 | 0.9205 | 0.9976 |
 
 *Diagnostic Interpretation: Score shifts reflect changes in the model's output probability distribution. In the absence of incoming labels, a shift in mean predicted risk indicates a change in average model output, but does not provide evidence of calibration drift or degraded ranking discrimination.*
+
+> [!NOTE]
+> **Methodological Limitation (Training-Reference Score Comparison)**:
+> In the default demonstration, the reference feature set is the training partition used to fit the model pipelines, while the incoming batch consists of held-out test observations. Consequently, the reference score distribution represents in-sample model predictions, whereas the incoming batch score distribution represents held-out (out-of-sample) predictions. Any observed score-distribution differences reflect both finite-sample variation and in-sample versus out-of-sample prediction behavior; they must NOT be attributed solely to population drift.
 
 ---
 
@@ -103,12 +107,12 @@ No operational warnings or critical alerts triggered. All 14 monitored features 
 
 ## Observations vs. Potential Explanations
 
-1. **Observed Finding**: Largest feature PSI in the demonstration run is `utility_payment_timeliness` (PSI = 0.00906).  
-   *Potential Explanation*: In an i.i.d. random split of finite synthetic data, minor differences across deciles represent standard finite-sample sampling variation rather than structural population drift.
-2. **Observed Finding**: Largest absolute mean score change is `Traditional baseline` (mean change = -0.0091, score PSI = 0.00732).  
-   *Potential Explanation*: The slight difference in mean predicted probability between the 8,000-row training set and 2,000-row test set reflects finite-sample variance across test applicants; score PSI remains well below the 0.10 threshold.
-3. **Observed Finding**: Alternative feature missingness rates in incoming batch closely match reference missingness rates (all differences within $\pm 1.6$ percentage points).  
-   *Potential Explanation*: The missing-at-random synthetic data generation mechanism is uniform across the entire synthetic dataset.
+1. **Observed Finding**: Largest feature PSI in the demonstration run is `utility_payment_timeliness` (PSI = 0.00906).
+   *Hypothesis (Not Proven Fact)*: In an i.i.d. random split of finite synthetic data, minor differences across deciles represent standard finite-sample sampling variation rather than structural population drift.
+2. **Observed Finding**: Largest absolute mean score change is `Traditional baseline` (mean change = -0.0091, score PSI = 0.00732).
+   *Hypothesis (Not Proven Fact)*: The slight difference in mean predicted probability between the 8,000-row training set and 2,000-row test set reflects finite-sample variance across test applicants and in-sample versus out-of-sample prediction behavior; score PSI remains well below the 0.10 threshold.
+3. **Observed Finding**: Alternative feature missingness rates in incoming batch closely match reference missingness rates (all differences within $\pm 1.5$ percentage points).
+   *Hypothesis (Not Proven Fact)*: The missing-at-random synthetic data generation mechanism is uniform across the entire synthetic dataset.
 
 ---
 

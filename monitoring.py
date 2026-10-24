@@ -381,9 +381,18 @@ def derive_feature_status(
     """
     miss_diff_pp = (missingness_batch - missingness_ref) * 100.0
 
+    # 1. Total feature dropout (all batch values missing while reference had non-missing data)
     if missingness_batch >= 1.0 and missingness_ref < 1.0:
         return "CRITICAL", "Total feature dropout (100% missing in incoming batch)"
 
+    # 2. Both reference and incoming batch are completely missing
+    if missingness_ref >= 1.0 and missingness_batch >= 1.0:
+        return (
+            "INSUFFICIENT_DATA",
+            "Zero non-missing values in reference and incoming batch; distribution drift diagnostics unavailable (missingness stable at 100.0%)",
+        )
+
+    # 3. Critical threshold checks
     critical_reasons: list[str] = []
     if np.isfinite(psi) and psi >= config.psi_critical_threshold:
         critical_reasons.append(
@@ -397,6 +406,7 @@ def derive_feature_status(
     if critical_reasons:
         return "CRITICAL", "; ".join(critical_reasons)
 
+    # 4. Warning threshold checks
     warning_reasons: list[str] = []
     if np.isfinite(psi) and psi >= config.psi_warning_threshold:
         warning_reasons.append(
@@ -410,8 +420,12 @@ def derive_feature_status(
     if warning_reasons:
         return "WARNING", "; ".join(warning_reasons)
 
+    # 5. Insufficient non-missing data for PSI calculation
     if np.isnan(psi):
-        return "INSUFFICIENT_DATA", f"Missingness stable ({miss_diff_pp:+.2f} pp); PSI undefined due to empty non-missing sample"
+        return (
+            "INSUFFICIENT_DATA",
+            f"Missingness change ({miss_diff_pp:+.2f} pp) within tolerance; PSI undefined due to empty non-missing sample",
+        )
 
     return "OK", (
         f"Stable distribution (PSI={psi:.4f} < {config.psi_warning_threshold:.2f}, "
@@ -668,10 +682,16 @@ def generate_monitoring_metadata(
     features_ok = int((feature_drift_df["status"] == "OK").sum())
     features_warn = int((feature_drift_df["status"] == "WARNING").sum())
     features_crit = int((feature_drift_df["status"] == "CRITICAL").sum())
+    features_insufficient = int((feature_drift_df["status"] == "INSUFFICIENT_DATA").sum())
 
     models_ok = int((score_monitoring_df["score_status"] == "OK").sum())
     models_warn = int((score_monitoring_df["score_status"] == "WARNING").sum())
     models_crit = int((score_monitoring_df["score_status"] == "CRITICAL").sum())
+    models_insufficient = (
+        int((score_monitoring_df["score_status"] == "INSUFFICIENT_DATA").sum())
+        if "INSUFFICIENT_DATA" in score_monitoring_df["score_status"].values
+        else 0
+    )
 
     ts = execution_timestamp or datetime.now(timezone.utc).isoformat()
 
@@ -711,10 +731,12 @@ def generate_monitoring_metadata(
             "features_ok": features_ok,
             "features_warning": features_warn,
             "features_critical": features_crit,
+            "features_insufficient_data": features_insufficient,
             "models_total": len(score_monitoring_df),
             "models_ok": models_ok,
             "models_warning": models_warn,
             "models_critical": models_crit,
+            "models_insufficient_data": models_insufficient,
         },
         "monitoring_limitations": [
             "All underlying data, models, and scores are simulated for machine learning pipeline demonstration.",
@@ -779,7 +801,7 @@ def generate_monitoring_report(
         )
     pct_table = "\n".join(pct_rows_md)
 
-    # Prioritized warnings
+    # Prioritized warnings & diagnostic limitations
     warnings_list: list[str] = []
     crit_feats = feature_drift_df[feature_drift_df["status"] == "CRITICAL"]
     warn_feats = feature_drift_df[feature_drift_df["status"] == "WARNING"]
@@ -795,14 +817,66 @@ def generate_monitoring_report(
     for _, r in warn_feats.iterrows():
         warnings_list.append(f"- **WARNING (Feature Drift)**: `{r['feature']}` — {r['warning_reason']}")
 
-    if not warnings_list:
-        warnings_section = (
+    insufficient_feats = feature_drift_df[feature_drift_df["status"] == "INSUFFICIENT_DATA"]
+    insufficient_list: list[str] = []
+    for _, r in insufficient_feats.iterrows():
+        unavail = []
+        if not np.isfinite(r["psi"]):
+            unavail.append("Population Stability Index (PSI) unavailable due to empty non-missing sample")
+        if not np.isfinite(r["ks_statistic"]):
+            unavail.append(
+                f"Kolmogorov-Smirnov (KS) test unavailable (non-missing sample size: ref={r['reference_non_missing']}, "
+                f"batch={r['incoming_non_missing']} < min threshold {config.min_sample_size_ks})"
+            )
+        diag_desc = "; ".join(unavail) if unavail else "Distribution drift diagnostics unavailable"
+        insufficient_list.append(
+            f"- **INSUFFICIENT DATA**: `{r['feature']}` ({r['feature_group']}) — {diag_desc}. "
+            f"Missingness: reference={r['reference_missingness_rate']*100:.1f}%, "
+            f"incoming batch={r['incoming_missingness_rate']*100:.1f}% (Δ={r['missingness_change_pp']:+.2f} pp). "
+            f"Diagnostic note: {r['warning_reason']}."
+        )
+
+    ks_limited_feats = feature_drift_df[
+        (~np.isfinite(feature_drift_df["ks_statistic"])) & (feature_drift_df["status"] != "INSUFFICIENT_DATA")
+    ]
+    ks_limited_list: list[str] = []
+    for _, r in ks_limited_feats.iterrows():
+        ks_limited_list.append(
+            f"- **SAMPLE SIZE LIMITATION (KS Unavailable)**: `{r['feature']}` ({r['feature_group']}) — "
+            f"Non-missing sample size below KS threshold ({config.min_sample_size_ks}): "
+            f"ref={r['reference_non_missing']}, incoming={r['incoming_non_missing']}. Status: {r['status']}."
+        )
+
+    sections: list[str] = []
+    if warnings_list:
+        sections.append("### Active Operational Alerts\n\n" + "\n".join(warnings_list))
+    elif not insufficient_list and not ks_limited_list:
+        sections.append(
             "No operational warnings or critical alerts triggered. All 14 monitored features and all 3 model "
             f"score distributions remain well within the configured operational warning thresholds "
             f"(PSI < {config.psi_warning_threshold:.2f}, |ΔMissingness| < {config.missingness_warning_threshold_pp:.1f} pp)."
         )
     else:
-        warnings_section = "\n".join(warnings_list)
+        sections.append(
+            "No threshold warnings or critical alerts were triggered on evaluable features. However, operational "
+            "diagnostics could not be fully evaluated for all features due to data limitations described below."
+        )
+
+    if insufficient_list:
+        sections.append(
+            "### Features with Insufficient Diagnostic Data\n\n"
+            "The following feature(s) have insufficient non-missing data to compute distribution drift statistics. "
+            "These features cannot be confirmed to be within tolerance:\n\n"
+            + "\n".join(insufficient_list)
+        )
+
+    if ks_limited_list:
+        sections.append(
+            "### Features with Sample-Size Diagnostic Limitations\n\n"
+            + "\n".join(ks_limited_list)
+        )
+
+    warnings_section = "\n\n".join(sections)
 
     # Find highest feature PSI and highest score shift for observations
     valid_psis = feature_drift_df[np.isfinite(feature_drift_df["psi"])]
@@ -810,13 +884,125 @@ def generate_monitoring_report(
         max_psi_row = valid_psis.loc[valid_psis["psi"].idxmax()]
         max_psi_desc = f"`{max_psi_row['feature']}` (PSI = {max_psi_row['psi']:.5f})"
     else:
-        max_psi_desc = "None"
+        max_psi_desc = "None (no finite feature PSI values)"
 
     max_score_shift_row = score_monitoring_df.loc[score_monitoring_df["abs_mean_score_change"].idxmax()]
     max_score_shift_desc = (
         f"`{max_score_shift_row['model']}` (mean change = {max_score_shift_row['mean_score_change']:+.4f}, "
         f"score PSI = {max_score_shift_row['score_psi']:.5f})"
     )
+
+    max_miss_diff = float(feature_drift_df["missingness_change_pp"].abs().max())
+
+    # Executive summary table and narrative
+    exec_summary_table = f"""| Diagnostic Domain | Total Monitored | Status OK | Status WARNING | Status CRITICAL | Status INSUFFICIENT DATA |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Monitored Predictor Features** | {summary['features_total']} | **{summary['features_ok']}** | {summary['features_warning']} | {summary['features_critical']} | {summary.get('features_insufficient_data', 0)} |
+| **Model Score Distributions** | {summary['models_total']} | **{summary['models_ok']}** | {summary['models_warning']} | {summary['models_critical']} | {summary.get('models_insufficient_data', 0)} |"""
+
+    has_feature_issues = (
+        summary.get("features_warning", 0) > 0
+        or summary.get("features_critical", 0) > 0
+        or summary.get("features_insufficient_data", 0) > 0
+    )
+    has_model_issues = summary.get("models_warning", 0) > 0 or summary.get("models_critical", 0) > 0
+
+    if mode == "default_demonstration":
+        if not has_feature_issues and not has_model_issues:
+            exec_summary_narrative = (
+                f"In the default demonstration, the incoming batch represents the held-out test partition "
+                f"({batch_rows:,} rows) evaluated against the reference training partition ({ref_rows:,} rows) "
+                f"under the identical seed-2026 stratified split. As expected for an independent, identically "
+                f"distributed partition from the same synthetic generator, all {summary['features_total']} features "
+                f"and all {summary['models_total']} model score distributions exhibit near-zero drift and remain "
+                f"well within operational tolerance."
+            )
+        else:
+            issue_parts = []
+            if summary.get("features_insufficient_data", 0) > 0:
+                issue_parts.append(
+                    f"{summary['features_insufficient_data']} feature(s) had insufficient non-missing data for distribution drift evaluation"
+                )
+            if summary.get("features_critical", 0) > 0:
+                issue_parts.append(f"{summary['features_critical']} feature(s) triggered critical alerts")
+            if summary.get("features_warning", 0) > 0:
+                issue_parts.append(f"{summary['features_warning']} feature(s) triggered warnings")
+            issue_desc = "; ".join(issue_parts)
+
+            exec_summary_narrative = (
+                f"In the default demonstration, the incoming batch represents the held-out test partition "
+                f"({batch_rows:,} rows) evaluated against the reference training partition ({ref_rows:,} rows) "
+                f"under the seed-2026 stratified split. Status summary: {summary['features_ok']} feature(s) and "
+                f"{summary['models_ok']} model score distribution(s) are within tolerance; {issue_desc}."
+            )
+    else:  # caller_supplied
+        if not has_feature_issues and not has_model_issues:
+            exec_summary_narrative = (
+                f"In this caller-supplied batch monitoring run, an incoming batch of {batch_rows:,} rows from "
+                f"`{batch_path}` was evaluated against a reference dataset of {ref_rows:,} rows from `{ref_path}`. "
+                f"All {summary['features_total']} monitored predictor features and all {summary['models_total']} model "
+                f"score distributions exhibit measured statistics within the configured operational thresholds "
+                f"(PSI < {config.psi_warning_threshold:.2f}, |ΔMissingness| < {config.missingness_warning_threshold_pp:.1f} pp). "
+                f"Measured stability across these operational metrics reflects only the specific caller-supplied batches; "
+                f"it does not imply that the batches are independent and identically distributed or share the synthetic generator's missingness mechanism."
+            )
+        else:
+            issue_parts = []
+            if summary.get("features_insufficient_data", 0) > 0:
+                issue_parts.append(
+                    f"{summary['features_insufficient_data']} feature(s) had insufficient data for distribution drift evaluation"
+                )
+            if summary.get("features_critical", 0) > 0:
+                issue_parts.append(f"{summary['features_critical']} feature(s) triggered critical alerts")
+            if summary.get("features_warning", 0) > 0:
+                issue_parts.append(f"{summary['features_warning']} feature(s) triggered warnings")
+            issue_desc = "; ".join(issue_parts)
+
+            exec_summary_narrative = (
+                f"In this caller-supplied batch monitoring run, an incoming batch of {batch_rows:,} rows from "
+                f"`{batch_path}` was evaluated against a reference dataset of {ref_rows:,} rows from `{ref_path}`. "
+                f"Across monitored inputs, {summary['features_ok']} feature(s) and {summary['models_ok']} model score "
+                f"distribution(s) are within operational tolerance; {issue_desc}. "
+                f"These diagnostic findings reflect strictly the caller-supplied inputs and must not be assumed to follow "
+                f"the default synthetic split or missingness mechanisms."
+            )
+
+    # Methodological caveat on training-reference score comparison
+    if mode == "default_demonstration":
+        score_caveat_md = """
+> [!NOTE]
+> **Methodological Limitation (Training-Reference Score Comparison)**:
+> In the default demonstration, the reference feature set is the training partition used to fit the model pipelines, while the incoming batch consists of held-out test observations. Consequently, the reference score distribution represents in-sample model predictions, whereas the incoming batch score distribution represents held-out (out-of-sample) predictions. Any observed score-distribution differences reflect both finite-sample variation and in-sample versus out-of-sample prediction behavior; they must NOT be attributed solely to population drift."""
+    else:
+        score_caveat_md = """
+> [!NOTE]
+> **Methodological Limitation (Caller-Supplied Score Comparison)**:
+> In a caller-supplied monitoring run, the reference dataset and incoming batch are provided externally. If the reference batch contains data used during model training while the incoming batch contains new observations, score shifts will reflect both sample variation and in-sample versus out-of-sample prediction characteristics. Score differences should not be attributed solely to population drift without independent knowledge of model training provenance for the reference and incoming records."""
+
+    # Observations vs. Potential Explanations
+    if mode == "default_demonstration":
+        observations_md = f"""## Observations vs. Potential Explanations
+
+1. **Observed Finding**: Largest feature PSI in the demonstration run is {max_psi_desc}.
+   *Hypothesis (Not Proven Fact)*: In an i.i.d. random split of finite synthetic data, minor differences across deciles represent standard finite-sample sampling variation rather than structural population drift.
+2. **Observed Finding**: Largest absolute mean score change is {max_score_shift_desc}.
+   *Hypothesis (Not Proven Fact)*: The slight difference in mean predicted probability between the 8,000-row training set and 2,000-row test set reflects finite-sample variance across test applicants and in-sample versus out-of-sample prediction behavior; score PSI remains well below the 0.10 threshold.
+3. **Observed Finding**: Alternative feature missingness rates in incoming batch closely match reference missingness rates (all differences within $\\pm {max_miss_diff:.1f}$ percentage points).
+   *Hypothesis (Not Proven Fact)*: The missing-at-random synthetic data generation mechanism is uniform across the entire synthetic dataset."""
+    else:
+        observations_md = f"""## Observations vs. Potential Explanations
+
+1. **Observed Finding**: Reference dataset `{ref_path}` ({ref_rows:,} rows) and incoming batch `{batch_path}` ({batch_rows:,} rows) were evaluated across {len(feature_drift_df)} features. Largest feature PSI observed is {max_psi_desc}.
+   *Hypothesis (Not Proven Fact)*: Observed PSI values reflect differences between the provided batches. Whether these differences represent ordinary sampling variability, seasonal changes, or population drift cannot be determined without knowledge of data collection provenance.
+2. **Observed Finding**: Model score distributions: largest absolute mean score change is {max_score_shift_desc}.
+   *Hypothesis (Not Proven Fact)*: Score distribution differences may arise from covariate shifts, differences in population composition between reference and incoming batches, or sampling variability. Without ground-truth outcome labels on the incoming batch, discrimination and calibration cannot be determined.
+3. **Observed Finding**: Missingness rate changes: maximum observed absolute missingness shift across features is $\\pm {max_miss_diff:.1f}$ percentage points.
+   *Hypothesis (Not Proven Fact)*: Missingness differences may reflect upstream data pipeline alterations, changes in caller feature collection, or random sampling variation. The data generating mechanism of caller-supplied batches cannot be assumed to follow the synthetic generator's missingness process."""
+
+    if len(insufficient_feats) > 0:
+        ins_feat_names = ", ".join(f"`{f}`" for f in insufficient_feats["feature"])
+        observations_md += f"""\n4. **Observed Finding**: {len(insufficient_feats)} feature(s) exhibited insufficient data for drift diagnostics: {ins_feat_names}.
+   *Hypothesis (Not Proven Fact)*: Complete missingness or extreme sparsity in reference or incoming batches precludes empirical quantile binning and distribution comparisons for these features."""
 
     return f"""# Batch Inference Monitoring & Data-Drift Diagnostic Report
 
@@ -846,12 +1032,9 @@ def generate_monitoring_report(
 
 ## Executive Summary
 
-| Diagnostic Domain | Total Monitored | Status OK | Status WARNING | Status CRITICAL |
-| :--- | :---: | :---: | :---: | :---: |
-| **Monitored Predictor Features** | {summary['features_total']} | **{summary['features_ok']}** | {summary['features_warning']} | {summary['features_critical']} |
-| **Model Score Distributions** | {summary['models_total']} | **{summary['models_ok']}** | {summary['models_warning']} | {summary['models_critical']} |
+{exec_summary_table}
 
-In the default demonstration, the incoming batch represents the held-out test partition ({batch_rows:,} rows) evaluated against the reference training partition ({ref_rows:,} rows) under the identical seed-2026 stratified split. As expected for an independent, identically distributed partition from the same synthetic generator, all 14 features and all 3 model score distributions exhibit near-zero drift and remain well within operational tolerance.
+{exec_summary_narrative}
 
 ---
 
@@ -873,7 +1056,7 @@ The input batch and reference data passed all pre-scoring integrity checks:
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 {feat_table}
 
-*Note: Missingness change is evaluated independently in percentage points (pp). PSI and two-sample KS statistics are computed exclusively on non-missing numeric values.*
+*Note: Missingness change is evaluated independently in percentage points (pp). PSI and two-sample KS statistics are computed exclusively on non-missing numeric values. When non-missing observations are absent or below the minimum sample threshold (n < {config.min_sample_size_ks}), PSI and KS statistics are marked as N/A.*
 
 ---
 
@@ -888,10 +1071,11 @@ Predicted default probabilities ($P(\\text{{default}} = 1)$) were generated acro
 ### Score Percentile Summaries
 
 | Model & Partition | Min | P05 | P25 | P50 (Median) | P75 | P95 | Max |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 {pct_table}
 
 *Diagnostic Interpretation: Score shifts reflect changes in the model's output probability distribution. In the absence of incoming labels, a shift in mean predicted risk indicates a change in average model output, but does not provide evidence of calibration drift or degraded ranking discrimination.*
+{score_caveat_md}
 
 ---
 
@@ -901,14 +1085,7 @@ Predicted default probabilities ($P(\\text{{default}} = 1)$) were generated acro
 
 ---
 
-## Observations vs. Potential Explanations
-
-1. **Observed Finding**: Largest feature PSI in the demonstration run is {max_psi_desc}.  
-   *Potential Explanation*: In an i.i.d. random split of finite synthetic data, minor differences across deciles represent standard finite-sample sampling variation rather than structural population drift.
-2. **Observed Finding**: Largest absolute mean score change is {max_score_shift_desc}.  
-   *Potential Explanation*: The slight difference in mean predicted probability between the 8,000-row training set and 2,000-row test set reflects finite-sample variance across test applicants; score PSI remains well below the 0.10 threshold.
-3. **Observed Finding**: Alternative feature missingness rates in incoming batch closely match reference missingness rates (all differences within $\\pm 1.6$ percentage points).  
-   *Potential Explanation*: The missing-at-random synthetic data generation mechanism is uniform across the entire synthetic dataset.
+{observations_md}
 
 ---
 
@@ -1150,7 +1327,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Mode: {metadata['execution_mode']}")
         print(f"Features Monitored: {len(feature_drift_df)} (OK: {metadata['summary_counts']['features_ok']}, "
               f"WARNING: {metadata['summary_counts']['features_warning']}, "
-              f"CRITICAL: {metadata['summary_counts']['features_critical']})")
+              f"CRITICAL: {metadata['summary_counts']['features_critical']}, "
+              f"INSUFFICIENT_DATA: {metadata['summary_counts']['features_insufficient_data']})")
         print(f"Models Monitored: {len(score_monitoring_df)} (OK: {metadata['summary_counts']['models_ok']}, "
               f"WARNING: {metadata['summary_counts']['models_warning']}, "
               f"CRITICAL: {metadata['summary_counts']['models_critical']})")

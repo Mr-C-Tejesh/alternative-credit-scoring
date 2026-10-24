@@ -54,6 +54,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -3795,6 +3796,137 @@ class TestBatchMonitoringDataDrift(unittest.TestCase):
             val(monitoring.MonitoringConfig(smoothing_epsilon=0.0))
         with self.assertRaises(ValueError):
             val(monitoring.MonitoringConfig(smoothing_epsilon=-1e-4))
+
+    def test_allowed_missing_feature_all_nan_in_both_reference_and_batch(self):
+        """When an allowed-missing feature is 100% missing in both ref and batch, status is INSUFFICIENT_DATA and report discloses it."""
+        _, _, ref_features, batch_features = monitoring.load_default_demonstration_data()
+        sparse_ref = ref_features.copy()
+        sparse_batch = batch_features.copy()
+
+        # Set utility_payment_timeliness to 100% missing in both
+        sparse_ref["utility_payment_timeliness"] = np.nan
+        sparse_batch["utility_payment_timeliness"] = np.nan
+
+        cfg = monitoring.MonitoringConfig()
+        f_df, _ = monitoring.compute_feature_drift(sparse_ref, sparse_batch, cfg)
+
+        util_row = f_df[f_df["feature"] == "utility_payment_timeliness"].iloc[0]
+        self.assertEqual(util_row["status"], "INSUFFICIENT_DATA")
+        self.assertTrue(np.isnan(util_row["psi"]))
+        self.assertTrue(np.isnan(util_row["ks_statistic"]))
+        self.assertEqual(util_row["reference_non_missing"], 0)
+        self.assertEqual(util_row["incoming_non_missing"], 0)
+        self.assertIn("Zero non-missing values", util_row["warning_reason"])
+
+        # Test metadata accounting
+        models = monitoring.load_fitted_models()
+        s_df, _ = monitoring.compute_score_monitoring(sparse_ref, sparse_batch, models, cfg)
+        metadata = monitoring.generate_monitoring_metadata(
+            f_df, s_df, cfg, "ref.csv", "batch.csv", execution_mode="caller_supplied"
+        )
+        counts = metadata["summary_counts"]
+        self.assertEqual(counts["features_insufficient_data"], 1)
+        self.assertEqual(
+            counts["features_total"],
+            counts["features_ok"] + counts["features_warning"] + counts["features_critical"] + counts["features_insufficient_data"],
+        )
+
+        # Test report disclosure
+        rep = monitoring.generate_monitoring_report(f_df, s_df, metadata, cfg)
+        self.assertIn("| Status INSUFFICIENT DATA |", rep)
+        self.assertIn("| **Monitored Predictor Features** | 14 | **13** | 0 | 0 | 1 |", rep)
+        self.assertIn("Features with Insufficient Diagnostic Data", rep)
+        self.assertIn("utility_payment_timeliness", rep)
+        self.assertNotIn("All 14 monitored features and all 3 model score distributions remain well within the configured operational warning thresholds", rep)
+        self.assertIn("These features cannot be confirmed to be within tolerance", rep)
+
+    def test_feature_status_counts_sum_strictly_equals_total(self):
+        """Sum of all feature status counts must strictly equal features_total across all scenarios."""
+        # 1. Default run
+        counts = self.metadata["summary_counts"]
+        self.assertIn("features_insufficient_data", counts)
+        self.assertEqual(
+            counts["features_total"],
+            counts["features_ok"] + counts["features_warning"] + counts["features_critical"] + counts["features_insufficient_data"],
+        )
+        self.assertEqual(counts["features_total"], 14)
+        self.assertEqual(counts["features_insufficient_data"], 0)
+
+        # 2. Mixed statuses scenario
+        _, _, ref_features, batch_features = monitoring.load_default_demonstration_data()
+        mod_batch = batch_features.copy()
+        mod_ref = ref_features.copy()
+        # utility_payment_timeliness: 100% missing in both -> INSUFFICIENT_DATA
+        mod_ref["utility_payment_timeliness"] = np.nan
+        mod_batch["utility_payment_timeliness"] = np.nan
+        # rental_payment_timeliness: 100% missing in batch, non-missing in ref -> CRITICAL (total dropout)
+        mod_batch["rental_payment_timeliness"] = np.nan
+        # age_years: shifted by 15 -> WARNING or CRITICAL
+        mod_batch["age_years"] = np.clip(mod_batch["age_years"] + 15, 20, 65)
+
+        cfg = monitoring.MonitoringConfig()
+        f_df, _ = monitoring.compute_feature_drift(mod_ref, mod_batch, cfg)
+        models = monitoring.load_fitted_models()
+        s_df, _ = monitoring.compute_score_monitoring(mod_ref, mod_batch, models, cfg)
+        meta = monitoring.generate_monitoring_metadata(
+            f_df, s_df, cfg, "ref.csv", "batch.csv", execution_mode="caller_supplied"
+        )
+        c = meta["summary_counts"]
+        self.assertEqual(c["features_insufficient_data"], 1)
+        self.assertGreaterEqual(c["features_critical"], 1)
+        self.assertEqual(
+            c["features_total"],
+            c["features_ok"] + c["features_warning"] + c["features_critical"] + c["features_insufficient_data"],
+        )
+
+    def test_default_demonstration_report_retains_split_description_and_training_score_caveat(self):
+        """Default demonstration report must retain split-specific description and training-reference score caveat."""
+        self.assertEqual(self.metadata["execution_mode"], "default_demonstration")
+        self.assertIn("seed-2026 stratified split", self.report)
+        self.assertIn("held-out test partition", self.report)
+        self.assertIn("reference training partition", self.report)
+        self.assertIn("Methodological Limitation (Training-Reference Score Comparison)", self.report)
+        self.assertIn("in-sample versus out-of-sample prediction behavior", self.report)
+        self.assertIn("must NOT be attributed solely to population drift", self.report)
+
+    def test_caller_supplied_report_narrative_boundaries_and_accuracy(self):
+        """Caller-supplied report must not claim default synthetic split or missingness mechanism, and label hypotheses."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            ref_csv = tmp_path / "custom_ref.csv"
+            batch_csv = tmp_path / "custom_batch.csv"
+
+            # Create minimal valid frames with target and applicant id
+            df_full = pd.read_csv(monitoring.DEFAULT_DATA_PATH)
+            df_full.iloc[:100].to_csv(ref_csv, index=False)
+            df_full.iloc[100:150].to_csv(batch_csv, index=False)
+
+            f_df, s_df, metadata, report = monitoring.run_batch_monitoring(
+                reference_path=ref_csv,
+                batch_path=batch_csv,
+                output_dir=tmp_path / "out",
+            )
+
+            self.assertEqual(metadata["execution_mode"], "caller_supplied")
+            # Must NOT claim default demonstration, seed-2026 split, or synthetic missingness mechanism
+            self.assertNotIn("identical seed-2026 stratified split", report)
+            self.assertNotIn("missing-at-random synthetic data generation mechanism is uniform", report)
+            self.assertNotIn("held-out test partition (2,000 rows)", report)
+
+            # Must label explanations as hypotheses
+            self.assertIn("Hypothesis (Not Proven Fact)", report)
+
+            # Must record input paths and row counts
+            self.assertIn(str(monitoring.to_relative_path(ref_csv)), report)
+            self.assertIn(str(monitoring.to_relative_path(batch_csv)), report)
+            self.assertIn("100 rows", report)
+            self.assertIn("50 rows", report)
+
+            # Must display measured values and caller-supplied caveat accurately
+            self.assertIn("Methodological Limitation (Caller-Supplied Score Comparison)", report)
+            self.assertIn("| Status INSUFFICIENT DATA |", report)
+            self.assertEqual(len(f_df), 14)
+            self.assertEqual(len(s_df), 3)
 
 
 if __name__ == "__main__":

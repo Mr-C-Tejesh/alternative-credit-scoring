@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-10-24T05:13:29.513397+00:00",
+  "generated_at_utc": "2026-10-24T05:49:44.122107+00:00",
   "phase": "Phase 09 \u2014 Batch Inference Monitoring & Data-Drift Diagnostics",
   "execution_mode": "default_demonstration",
   "dataset_settings": {
@@ -58,10 +58,12 @@
     "features_ok": 14,
     "features_warning": 0,
     "features_critical": 0,
+    "features_insufficient_data": 0,
     "models_total": 3,
     "models_ok": 3,
     "models_warning": 0,
-    "models_critical": 0
+    "models_critical": 0,
+    "models_insufficient_data": 0
   },
   "monitoring_limitations": [
     "All underlying data, models, and scores are simulated for machine learning pipeline demonstration.",
