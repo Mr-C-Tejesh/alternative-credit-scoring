@@ -109,6 +109,24 @@ An interactive demonstration interface (`app.py`) provides graphical access to t
 - **Mandatory Pre-Inference Validation:** Assembled rows are passed through `validate_feature_frame()` before inference. Model execution is rejected with user-facing alerts if any contract boundary is violated.
 - **Shared Implementation:** All scoring, risk-band mappings, and additive local explanations invoke the core functions (`risk_scoring.py`, `explainability.py`, and `inference_helper.py`) without divergent UI logic.
 
+## HTTP Inference Service & Serving Architecture
+A production-style HTTP inference microservice (`api.py`) serves the serialized `models/hybrid_logistic_regression.joblib` pipeline:
+- **Service Endpoints:**
+  - `GET /health`: Liveness probe verifying process responsiveness (returns 200 `{"status": "healthy"}` regardless of model load status).
+  - `GET /ready`: Readiness probe verifying model pipeline initialization (returns 200 `{"status": "ready"}` when loaded, 503 `{"status": "unready"}` when unavailable).
+  - `POST /v1/predict`: Single-applicant scoring endpoint returning estimated default probability, illustrative PDO score, model risk band, and top-3 additive feature contributions.
+- **Contract Enforcement & Data Privacy:**
+  - Request payloads require all 14 features (`ALL_FEATURES`) and strictly forbid extra fields (`extra="forbid"`), rejecting arbitrary attributes or target variables.
+  - Domain bounds, integer-only restrictions, and bureau consistency rules are strictly validated.
+  - Exception handling sanitizes error outputs to ensure raw applicant financial values are never reflected in HTTP 422 responses.
+- **Containerization & Least-Privilege Execution:**
+  - Packaged via a multi-stage/lean `Dockerfile` running on `python:3.12-slim` under an unprivileged system user (`appuser:appgroup`).
+  - Container health checks leverage the Python standard library `urllib.request` without external shell or curl dependencies.
+- **Serving Governance & Limitations:**
+  - The API exposes mathematical predictions from a model fitted exclusively on synthetic data.
+  - It carries **no credit underwriting authority**: outputs do not constitute loan approvals, rejections, credit pricing, or statutory adverse-action reasons.
+  - Any real-world deployment requires a complete, independent architecture review covering end-to-end authentication, authorization, TLS termination, privacy/DPDP compliance, model drift monitoring, and regulatory compliance.
+
 ## Limitations
 - Simulated population, features, missingness and target generation.
 - Synthetic no-bureau-history group is not a validated representation of credit-invisible borrowers.

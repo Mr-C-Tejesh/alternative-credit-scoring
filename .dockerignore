@@ -1,0 +1,39 @@
+# Git and CI/CD
+.git
+.gitignore
+.github
+
+# Virtual environment and Python caches
+.venv
+venv
+env
+ENV
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache
+
+# Data and training artifacts
+data/
+*.csv
+
+# Experiments, training scripts, and unserved models
+experiments/
+train.py
+models/traditional_baseline.joblib
+models/hybrid_hist_gradient_boosting.joblib
+
+# Test suite and test artifacts
+tests/
+
+# Reports and documentation
+reports/
+*.md
+
+# Editor and OS artifacts
+.vscode/
+.idea/
+.DS_Store
+*.log
+scratch/

@@ -74,6 +74,8 @@ import experiments.alternative_feature_ablation as ablation_exp  # noqa: E402
 import uncertainty_analysis  # noqa: E402
 import stress_testing  # noqa: E402
 import monitoring  # noqa: E402
+import api  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 
 
@@ -3927,6 +3929,334 @@ class TestBatchMonitoringDataDrift(unittest.TestCase):
             self.assertIn("| Status INSUFFICIENT DATA |", report)
             self.assertEqual(len(f_df), 14)
             self.assertEqual(len(s_df), 3)
+
+
+# ---------------------------------------------------------------------------
+# Phase 10: Inference API & Containerization Tests
+# ---------------------------------------------------------------------------
+
+class TestInferenceAPI(unittest.TestCase):
+    """Automated tests for FastAPI inference service, probes, and validation."""
+
+    def setUp(self):
+        self.valid_applicant_payload = {
+            "age_years": 32,
+            "monthly_income_inr": 55000.0,
+            "employment_tenure_years": 4.5,
+            "debt_to_income_ratio": 0.28,
+            "existing_loan_count": 1,
+            "credit_utilization_ratio": 0.35,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 720.0,
+            "utility_payment_timeliness": 0.95,
+            "rental_payment_timeliness": 0.92,
+            "digital_payment_regularity": 0.88,
+            "cashflow_stability_index": 0.75,
+            "alternative_history_months": 18,
+        }
+        self.cold_start_applicant_payload = {
+            "age_years": 24,
+            "monthly_income_inr": 25000.0,
+            "employment_tenure_years": 1.0,
+            "debt_to_income_ratio": 0.15,
+            "existing_loan_count": 0,
+            "credit_utilization_ratio": 0.10,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 0,
+            "bureau_score": None,
+            "utility_payment_timeliness": None,
+            "rental_payment_timeliness": None,
+            "digital_payment_regularity": None,
+            "cashflow_stability_index": None,
+            "alternative_history_months": None,
+        }
+
+    def test_health_endpoint_liveness_even_when_unready(self):
+        """Liveness probe /health must return 200 OK even if the model is not loaded."""
+        unready_app = api.create_app(load_on_startup=False)
+        with TestClient(unready_app) as client:
+            resp = client.get("/health")
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()["status"], "healthy")
+            self.assertIsNone(unready_app.state.model)
+
+    def test_readiness_endpoint_unready_and_ready(self):
+        """Readiness probe /ready returns 503 when unready and 200 with metadata when ready."""
+        # Unready case
+        unready_app = api.create_app(load_on_startup=False)
+        with TestClient(unready_app) as client:
+            resp_unready = client.get("/ready")
+            self.assertEqual(resp_unready.status_code, 503)
+            data_unready = resp_unready.json()
+            self.assertEqual(data_unready["status"], "unready")
+            self.assertFalse(data_unready["model_loaded"])
+            # Ensure no local file paths leaked
+            self.assertNotIn("/Users/", json.dumps(data_unready))
+            self.assertNotIn("Traceback", json.dumps(data_unready))
+
+        # Ready case (default app)
+        with TestClient(api.app) as client:
+            resp_ready = client.get("/ready")
+            self.assertEqual(resp_ready.status_code, 200)
+            data_ready = resp_ready.json()
+            self.assertEqual(data_ready["status"], "ready")
+            self.assertTrue(data_ready["model_loaded"])
+            self.assertEqual(data_ready["model_identifier"], api.MODEL_IDENTIFIER)
+
+    def test_valid_prediction_matches_inference_pipeline(self):
+        """Valid applicant POST /v1/predict returns 200 matching pipeline scores and explanations."""
+        with TestClient(api.app) as client:
+            resp = client.post("/v1/predict", json=self.valid_applicant_payload)
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+
+            # Verify schema fields
+            self.assertIn("default_probability_12m", data)
+            self.assertIn("risk_band", data)
+            self.assertIn("scoring", data)
+            self.assertIn("top_risk_increasing_factors", data)
+            self.assertIn("top_risk_decreasing_factors", data)
+            self.assertIn("model_identifier", data)
+            self.assertIn("schema_version", data)
+            self.assertIn("disclaimer", data)
+            self.assertIn("educational_notice", data)
+
+            # Validate range and types
+            prob = data["default_probability_12m"]
+            self.assertIsInstance(prob, float)
+            self.assertGreaterEqual(prob, 0.0)
+            self.assertLessEqual(prob, 1.0)
+
+            score_meta = data["scoring"]
+            self.assertIsInstance(score_meta["display_score"], int)
+            self.assertGreaterEqual(score_meta["display_score"], 300)
+            self.assertLessEqual(score_meta["display_score"], 850)
+
+            self.assertIn(
+                data["risk_band"],
+                {
+                    "Lower model-estimated risk",
+                    "Middle model-estimated risk",
+                    "Higher model-estimated risk",
+                },
+            )
+
+            # Direct comparison with inference_helper.run_inference_pipeline
+            model = api.app.state.model
+            direct_res = inference_helper.run_inference_pipeline(
+                model,
+                pd.DataFrame([self.valid_applicant_payload]),
+            )
+            self.assertAlmostEqual(prob, direct_res.probability, places=6)
+            self.assertEqual(score_meta["display_score"], direct_res.score_result.display_score)
+            self.assertEqual(data["risk_band"], direct_res.risk_band)
+
+            # Check explanation decomposition
+            increasing = data["top_risk_increasing_factors"]
+            decreasing = data["top_risk_decreasing_factors"]
+            self.assertLessEqual(len(increasing), 3)
+            self.assertLessEqual(len(decreasing), 3)
+            for factor in increasing + decreasing:
+                self.assertIn("feature", factor)
+                self.assertIn("contribution", factor)
+                self.assertIsInstance(factor["contribution"], float)
+
+            # Metadata and disclaimers
+            self.assertEqual(data["model_identifier"], "hybrid_logistic_regression")
+            self.assertEqual(data["schema_version"], "v1")
+            self.assertEqual(score_meta["pdo"], 20.0)
+            self.assertEqual(score_meta["base_score"], 600.0)
+            self.assertEqual(score_meta["base_odds"], 50.0)
+            self.assertEqual(data["disclaimer"], api.DISCLAIMER_TEXT)
+            self.assertEqual(data["educational_notice"], api.EDUCATIONAL_NOTICE_TEXT)
+
+    def test_cold_start_applicant_prediction(self):
+        """Cold-start applicant with no bureau and all alternative null returns valid prediction."""
+        with TestClient(api.app) as client:
+            resp = client.post("/v1/predict", json=self.cold_start_applicant_payload)
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+            self.assertIsInstance(data["default_probability_12m"], float)
+            self.assertTrue(0.0 <= data["default_probability_12m"] <= 1.0)
+            self.assertIsInstance(data["scoring"]["display_score"], int)
+            self.assertIn(
+                data["risk_band"],
+                {
+                    "Lower model-estimated risk",
+                    "Middle model-estimated risk",
+                    "Higher model-estimated risk",
+                },
+            )
+
+    def test_missing_required_traditional_features_rejected_422(self):
+        """Omitting required traditional features returns 422 Unprocessable Content."""
+        payload = self.valid_applicant_payload.copy()
+        del payload["monthly_income_inr"]
+        del payload["debt_to_income_ratio"]
+
+        with TestClient(api.app) as client:
+            resp = client.post("/v1/predict", json=payload)
+            self.assertEqual(resp.status_code, 422)
+            errors = resp.json().get("detail", [])
+            fields_with_errors = [e["field"] for e in errors]
+            self.assertIn("monthly_income_inr", fields_with_errors)
+            self.assertIn("debt_to_income_ratio", fields_with_errors)
+
+    def test_extra_fields_forbidden_422(self):
+        """Submitting extra fields (including applicant_id or target) returns 422."""
+        payload = self.valid_applicant_payload.copy()
+        payload["applicant_id"] = "APP-99999"
+        payload["default_within_12_months"] = 0
+        payload["unexpected_attribute"] = "malicious_injection"
+
+        with TestClient(api.app) as client:
+            resp = client.post("/v1/predict", json=payload)
+            self.assertEqual(resp.status_code, 422)
+            resp_text = resp.text
+            self.assertIn("Extra inputs are not permitted", resp_text)
+
+    def test_domain_bounds_and_integer_only_and_booleans_rejected_422(self):
+        """Out of bounds, fractional values on integer features, and booleans return 422."""
+        with TestClient(api.app) as client:
+            # 1. Out-of-bounds continuous
+            p1 = self.valid_applicant_payload.copy()
+            p1["monthly_income_inr"] = 5000.0  # Min is 8000.0
+            r1 = client.post("/v1/predict", json=p1)
+            self.assertEqual(r1.status_code, 422)
+            self.assertTrue(any("monthly_income_inr" in e["field"] for e in r1.json()["detail"]))
+
+            # 2. Fractional integer
+            p2 = self.valid_applicant_payload.copy()
+            p2["age_years"] = 32.5  # age must be integer
+            r2 = client.post("/v1/predict", json=p2)
+            self.assertEqual(r2.status_code, 422)
+            self.assertTrue(any("age_years" in e["field"] for e in r2.json()["detail"]))
+
+            # 3. Fractional order frequency / alternative history months
+            p3 = self.valid_applicant_payload.copy()
+            p3["alternative_history_months"] = 4.2  # must be integer
+            r3 = client.post("/v1/predict", json=p3)
+            self.assertEqual(r3.status_code, 422)
+            self.assertTrue(any("alternative_history_months" in e["field"] for e in r3.json()["detail"]))
+
+            # 4. Boolean passed where number expected
+            p4 = self.valid_applicant_payload.copy()
+            p4["age_years"] = True
+            r4 = client.post("/v1/predict", json=p4)
+            self.assertEqual(r4.status_code, 422)
+            self.assertTrue(any("age_years" in e["field"] for e in r4.json()["detail"]))
+
+            # 5. Boolean passed for binary flag
+            p5 = self.valid_applicant_payload.copy()
+            p5["bureau_history_available"] = False
+            r5 = client.post("/v1/predict", json=p5)
+            self.assertEqual(r5.status_code, 422)
+            self.assertTrue(any("bureau_history_available" in e["field"] for e in r5.json()["detail"]))
+
+    def test_inconsistent_bureau_records_rejected_422(self):
+        """Inconsistent bureau availability and score combinations return 422."""
+        with TestClient(api.app) as client:
+            # bureau_history_available=0 but bureau_score provided
+            p1 = self.valid_applicant_payload.copy()
+            p1["bureau_history_available"] = 0
+            p1["bureau_score"] = 650.0
+            r1 = client.post("/v1/predict", json=p1)
+            self.assertEqual(r1.status_code, 422)
+            self.assertTrue(any("bureau_score" in (e.get("field", "") + e.get("message", "")) for e in r1.json()["detail"]))
+
+            # bureau_history_available=1 but bureau_score is None
+            p2 = self.valid_applicant_payload.copy()
+            p2["bureau_history_available"] = 1
+            p2["bureau_score"] = None
+            r2 = client.post("/v1/predict", json=p2)
+            self.assertEqual(r2.status_code, 422)
+            self.assertTrue(any("bureau_score" in (e.get("field", "") + e.get("message", "")) for e in r2.json()["detail"]))
+
+    def test_error_responses_never_echo_raw_values(self):
+        """Validation errors must sanitize output and never echo submitted input values."""
+        sensitive_income = 99999999.888
+        sensitive_dti = 123.456789
+        p = self.valid_applicant_payload.copy()
+        p["monthly_income_inr"] = sensitive_income
+        p["debt_to_income_ratio"] = sensitive_dti
+
+        with TestClient(api.app) as client:
+            resp = client.post("/v1/predict", json=p)
+            self.assertEqual(resp.status_code, 422)
+            resp_body = resp.text
+
+            # Assert submitted sensitive values are not contained anywhere in response
+            self.assertNotIn(str(sensitive_income), resp_body)
+            self.assertNotIn("99999999", resp_body)
+            self.assertNotIn(str(sensitive_dti), resp_body)
+            self.assertNotIn("123.456789", resp_body)
+
+            # Error items should contain only field, message, type keys
+            data = resp.json()
+            for err in data["detail"]:
+                self.assertIn("field", err)
+                self.assertIn("message", err)
+                self.assertIn("type", err)
+                self.assertNotIn("input", err)
+
+    def test_prediction_while_unready_returns_503(self):
+        """Prediction request when model is unready returns 503 without leaking paths."""
+        unready_app = api.create_app(load_on_startup=False)
+        with TestClient(unready_app) as client:
+            resp = client.post("/v1/predict", json=self.valid_applicant_payload)
+            self.assertEqual(resp.status_code, 503)
+            self.assertIn("detail", resp.json())
+            self.assertEqual(resp.json()["detail"], "Model service is not ready to process predictions.")
+            # Ensure no system paths or stack traces leaked
+            self.assertNotIn("/Users/", resp.text)
+            self.assertNotIn("Traceback", resp.text)
+
+    def test_model_loaded_once_not_per_request(self):
+        """Model artifact must be loaded once at application startup, not reloaded per request."""
+        mock_pipeline = api.app.state.model
+        loader_mock = MagicMock(return_value=mock_pipeline)
+
+        app_with_mock = api.create_app(load_on_startup=True, model_loader=loader_mock)
+        with TestClient(app_with_mock) as client:
+            # Loader should have been called exactly once during startup
+            self.assertEqual(loader_mock.call_count, 1)
+
+            # Make 3 consecutive predictions
+            for _ in range(3):
+                resp = client.post("/v1/predict", json=self.valid_applicant_payload)
+                self.assertEqual(resp.status_code, 200)
+
+            # Call count must still be 1 (never reloaded per request)
+            self.assertEqual(loader_mock.call_count, 1)
+
+    def test_response_contains_no_underwriting_decision(self):
+        """API response must not include underwriting decision or credit pricing fields."""
+        with TestClient(api.app) as client:
+            resp = client.post("/v1/predict", json=self.valid_applicant_payload)
+            self.assertEqual(resp.status_code, 200)
+            data = resp.json()
+
+            forbidden_keys = [
+                "approved",
+                "declined",
+                "approval",
+                "decision",
+                "credit_decision",
+                "pricing",
+                "interest_rate",
+                "credit_limit",
+                "underwriting_result",
+            ]
+            for key in forbidden_keys:
+                self.assertNotIn(key, data)
+
+    def test_uvicorn_cli_import_smoke(self):
+        """api:app must be importable as standard ASGI application for uvicorn."""
+        import importlib
+        api_mod = importlib.import_module("api")
+        self.assertTrue(hasattr(api_mod, "app"))
+        self.assertIsInstance(api_mod.app, api.FastAPI)
 
 
 if __name__ == "__main__":

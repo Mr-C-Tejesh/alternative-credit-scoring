@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 221 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, and batch drift monitoring:
+The test suite contains 234 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, and HTTP inference API lifecycle/validation contracts:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -151,6 +151,26 @@ python monitoring.py --reference-path path/to/reference.csv --batch-path path/to
 ```
 
 Deliverables are generated into `reports/monitoring/`.
+
+### J. Run the HTTP Inference Service (Local or Docker)
+
+To start the FastAPI inference microservice (`api.py`) exposing the hybrid Logistic Regression model:
+
+```bash
+# Option 1: Run locally with uvicorn (development)
+uvicorn api:app --reload --host 127.0.0.1 --port 8000
+
+# Option 2: Build and run the reproducible Docker container
+docker build -t alternative-credit-scoring-api:latest .
+docker run --rm -p 127.0.0.1:8000:8000 alternative-credit-scoring-api:latest
+```
+
+Verify service liveness and readiness:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/ready
+```
 
 ---
 
@@ -302,7 +322,112 @@ To assess feature and score distribution stability on incoming prediction cohort
 
 ---
 
-## 8. Feature Groups & Supported Domain Bounds
+## 8. HTTP Inference API & Container Deployment
+
+Phase 10 implements a production-style, lightweight HTTP inference microservice (`api.py`) powered by FastAPI that serves the trained `models/hybrid_logistic_regression.joblib` pipeline with runtime data contracts, health checks, and explanation decomposition.
+
+### A. Service Endpoints
+
+| Method | Endpoint | Description | Expected Status Codes |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/health` | Liveness probe confirming process execution (does not claim model readiness) | `200 OK` |
+| `GET` | `/ready` | Readiness probe verifying model pipeline artifact is loaded and ready to serve | `200 OK` (ready), `503 Service Unavailable` (unready) |
+| `POST` | `/v1/predict` | Single-applicant inference returning probability, PDO score, risk band, and top-3 additive explanations | `200 OK` (success), `422 Unprocessable Content` (contract validation error), `503 Service Unavailable` (model unready) |
+
+### B. Input Validation Contract & Privacy Protection
+
+- **Full Feature Schema:** The request body requires all 14 predictor features (`ALL_FEATURES`).
+- **Extra Fields Forbidden:** Submitting unmapped fields, target labels (`default_within_12_months`), or identifiers (`applicant_id`) is strictly rejected with `422 Unprocessable Content`.
+- **Domain Bounds & Dtypes:** Continuous features must lie within synthetic bounds, integer features reject fractional numbers, and booleans are prohibited for numeric inputs.
+- **Bureau Consistency:** `bureau_score` must be null when `bureau_history_available == 0`, and non-null in $[300.0, 900.0]$ when `bureau_history_available == 1`.
+- **Zero Input Reflection in Errors:** The custom `RequestValidationError` handler strips raw user inputs from error payloads, ensuring submitted financial details are never reflected in response logs or error bodies.
+
+### C. Example Prediction Request & Response
+
+#### Request (`POST /v1/predict`)
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "age_years": 32,
+    "monthly_income_inr": 55000.0,
+    "employment_tenure_years": 4.5,
+    "debt_to_income_ratio": 0.28,
+    "existing_loan_count": 1,
+    "credit_utilization_ratio": 0.35,
+    "prior_delinquencies_24m": 0,
+    "bureau_history_available": 1,
+    "bureau_score": 720.0,
+    "utility_payment_timeliness": 0.95,
+    "rental_payment_timeliness": 0.92,
+    "digital_payment_regularity": 0.88,
+    "cashflow_stability_index": 0.75,
+    "alternative_history_months": 18
+  }'
+```
+
+#### Response (`200 OK`)
+
+```json
+{
+  "model_identifier": "hybrid_logistic_regression",
+  "schema_version": "v1",
+  "default_probability_12m": 0.006158,
+  "risk_band": "Lower model-estimated risk",
+  "scoring": {
+    "display_score": 634,
+    "raw_score": 633.81,
+    "is_clamped": false,
+    "min_score": 300,
+    "max_score": 850,
+    "base_score": 600.0,
+    "base_odds": 50.0,
+    "pdo": 20.0
+  },
+  "top_risk_increasing_factors": [
+    {
+      "feature": "trad__age_years",
+      "readable_name": "Applicant age (age_years)",
+      "transformed_value": -0.7905,
+      "coefficient": -0.2711,
+      "contribution": 0.2143
+    }
+  ],
+  "top_risk_decreasing_factors": [
+    {
+      "feature": "alt_ind__utility_payment_timeliness",
+      "readable_name": "Utility payment timeliness ratio (utility_payment_timeliness)",
+      "transformed_value": 1.0902,
+      "coefficient": -0.8536,
+      "contribution": -0.9306
+    }
+  ],
+  "disclaimer": "This result is generated by a model trained on synthetic data for educational demonstration only. It is not validated for real borrowers and must not be used to make credit decisions.",
+  "educational_notice": "The estimated probability, illustrative score, and risk band are simulated machine learning outputs. They do not constitute an approval, rejection, credit eligibility determination, loan pricing, or legally compliant adverse-action assessment of creditworthiness."
+}
+```
+
+### D. Containerization & Deployment Execution
+
+```bash
+# Build the reproducible container image
+docker build -t alternative-credit-scoring-api:latest .
+
+# Run the container bound strictly to loopback interface (least-privilege appuser)
+docker run --rm -p 127.0.0.1:8000:8000 alternative-credit-scoring-api:latest
+
+# Verify health status
+curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/ready
+```
+
+> [!NOTE]
+> The container is configured with a standard-library Python health check (`urllib.request`) and runs as an unprivileged system user (`appuser:appgroup`).
+
+---
+
+## 9. Feature Groups & Supported Domain Bounds
 
 The operational boundaries below reflect the synthetic generator distribution and the input validation contract in `validation.py`. They are **model support bounds for this synthetic benchmark**, not universal borrower limits or statutory lending rules:
 
@@ -325,7 +450,7 @@ The operational boundaries below reflect the synthetic generator distribution an
 
 ---
 
-## 9. Model Outputs & Mathematical Methodology
+## 10. Model Outputs & Mathematical Methodology
 
 ### A. Estimated Default Probability ($p$)
 The hybrid Logistic Regression model outputs an estimated probability of default within 12 months ($p \in [0, 1]$). Because this model was trained on simulated data, $p$ reflects synthetic patterns, not true borrower risk.
@@ -353,7 +478,7 @@ $$\text{logit}(p) = \text{intercept} + \sum_{j=1}^M (\text{coef}_j \cdot x'_j)$$
 
 ---
 
-## 10. Repository Architecture
+## 11. Repository Architecture
 
 ```
 alternative-credit-scoring/
@@ -382,7 +507,10 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 221 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 234 comprehensive automated unit and AppTest tests
+├── .dockerignore                # Container build context exclusions
+├── Dockerfile                   # Reproducible non-root container build (python:3.12-slim)
+├── api.py                       # FastAPI HTTP inference service (/health, /ready, /v1/predict)
 ├── app.py                       # Streamlit web demonstration
 ├── monitoring.py                # Batch inference monitoring & data-drift diagnostics
 ├── predict.py                   # Command-line prediction and explanation demo
@@ -401,7 +529,7 @@ alternative-credit-scoring/
 
 ---
 
-## 11. Limitations & Governance Notice
+## 12. Limitations & Governance Notice
 
 1. **Simulation Benchmark Only:** Features and target outcomes are artificially constructed by mathematical formulas.
 2. **No Real Lending Authority:** Outputs must not be used to approve, reject, price, or rank real applicants.
