@@ -115,15 +115,22 @@ A production-style HTTP inference microservice (`api.py`) serves the serialized 
   - `GET /health`: Liveness probe verifying process responsiveness (returns 200 `{"status": "healthy"}` regardless of model load status).
   - `GET /ready`: Readiness probe verifying model pipeline initialization (returns 200 `{"status": "ready"}` when loaded, 503 `{"status": "unready"}` when unavailable).
   - `POST /v1/predict`: Single-applicant scoring endpoint returning estimated default probability, illustrative PDO score, model risk band, and top-3 additive feature contributions.
+  - `GET /metrics`: Prometheus text exposition (`prometheus-client`) exposing bounded operational request counters, latency histograms, prediction outcome categories, and model readiness gauges.
 - **Contract Enforcement & Data Privacy:**
   - Request payloads require all 14 features (`ALL_FEATURES`) and strictly forbid extra fields (`extra="forbid"`), rejecting arbitrary attributes or target variables.
   - Domain bounds, integer-only restrictions, and bureau consistency rules are strictly validated.
   - Exception handling sanitizes error outputs to ensure raw applicant financial values are never reflected in HTTP 422 responses.
+- **Privacy-Safe Observability & Cardinality Safeguards:**
+  - Metric labels use bounded enumerations: route labels map strictly to `KNOWN_METRIC_ROUTES` (unrecognized paths map to `"unmatched"`), and HTTP methods map to `VALID_HTTP_METHODS` (unknown verbs map to `"OTHER"`).
+  - Metrics never log or expose applicant identifiers, financial feature values, predicted probabilities, scores, query strings, or system exception stack traces.
+  - Scrapes to `/metrics` are bypassed by middleware to eliminate self-observation feedback loops.
+  - Each app instance created via `create_app()` maintains an isolated `CollectorRegistry` to prevent cross-test state pollution.
 - **Containerization & Least-Privilege Execution:**
   - Packaged via a multi-stage/lean `Dockerfile` running on `python:3.12-slim` under an unprivileged system user (`appuser:appgroup`).
   - Container health checks leverage the Python standard library `urllib.request` without external shell or curl dependencies.
 - **Serving Governance & Limitations:**
   - The API exposes mathematical predictions from a model fitted exclusively on synthetic data.
+  - **Telemetry vs. Predictive Validity:** Operational metrics measure web server throughput, latency, and HTTP status codes. They do **not** provide evidence of model predictive accuracy, calibration stability, or real-world creditworthiness. Input drift must be evaluated via feature-level distribution tests (Phase 09), while model predictive performance strictly requires observed ground-truth default outcomes after loan maturation.
   - It carries **no credit underwriting authority**: outputs do not constitute loan approvals, rejections, credit pricing, or statutory adverse-action reasons.
   - Any real-world deployment requires a complete, independent architecture review covering end-to-end authentication, authorization, TLS termination, privacy/DPDP compliance, model drift monitoring, and regulatory compliance.
 

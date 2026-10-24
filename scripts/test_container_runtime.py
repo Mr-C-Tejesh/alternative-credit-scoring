@@ -329,6 +329,71 @@ def test_input_contract_rejection(base_url: str) -> None:
     print("[PASS] Contract validation: extra forbidden field correctly rejected with sanitized HTTP 422")
 
 
+def test_metrics_scrape(base_url: str) -> None:
+    """Verify GET /metrics responds with valid Prometheus exposition reflecting prior smoke requests."""
+    url = f"{base_url}/metrics"
+    status_code, body = _make_http_request(url, method="GET")
+
+    if status_code != 200:
+        raise RuntimeError(f"Scraping /metrics failed with HTTP {status_code}: {body}")
+
+    body_text = str(body) if not isinstance(body, str) else body
+
+    # 1. Verify expected metric families are present
+    expected_families = [
+        "http_requests_total",
+        "http_request_duration_seconds",
+        "prediction_outcomes_total",
+        "model_ready",
+        "model_info",
+    ]
+    for family in expected_families:
+        if f"# HELP {family}" not in body_text or f"# TYPE {family}" not in body_text:
+            raise ValueError(f"Metrics exposition missing definition for family: '{family}'")
+
+    # 2. Verify request counts reflect the completed smoke requests
+    # Smoke run executed /health, /ready, standard /v1/predict (200), cold-start /v1/predict (200), extra field (422)
+    if 'http_requests_total{method="GET",route="/health",status="200"}' not in body_text:
+        raise ValueError("Metrics missing expected counter for GET /health")
+    if 'http_requests_total{method="GET",route="/ready",status="200"}' not in body_text:
+        raise ValueError("Metrics missing expected counter for GET /ready")
+    if 'http_requests_total{method="POST",route="/v1/predict",status="200"}' not in body_text:
+        raise ValueError("Metrics missing expected counter for POST /v1/predict status 200")
+    if 'http_requests_total{method="POST",route="/v1/predict",status="422"}' not in body_text:
+        raise ValueError("Metrics missing expected counter for POST /v1/predict status 422")
+
+    # 3. Verify prediction outcome counters reflect the smoke run
+    if 'prediction_outcomes_total{model="hybrid_logistic_regression",outcome="success"}' not in body_text:
+        raise ValueError("Metrics missing expected prediction_outcomes_total outcome=success")
+    if 'prediction_outcomes_total{model="hybrid_logistic_regression",outcome="validation_error"}' not in body_text:
+        raise ValueError("Metrics missing expected prediction_outcomes_total outcome=validation_error")
+
+    # 4. Verify gauges reflect readiness and model info
+    if 'model_ready{model="hybrid_logistic_regression"} 1.0' not in body_text:
+        raise ValueError("Metrics missing expected model_ready gauge value 1.0")
+    if 'model_info{model="hybrid_logistic_regression",schema_version="v1"} 1.0' not in body_text:
+        raise ValueError("Metrics missing expected model_info gauge value 1.0")
+
+    # 5. Verify /metrics scraping is excluded from request metrics
+    if 'route="/metrics"' in body_text:
+        raise ValueError("Metrics contains self-observing route='/metrics' entry!")
+
+    # 6. Verify zero sensitive test identifier or raw applicant data leakage
+    forbidden_values = [
+        "REJECT_ID_999",
+        "55000.0",
+        "720.0",
+        "applicant_id",
+        "digital_payment_regularity",
+        "cashflow_stability_index",
+    ]
+    for sensitive in forbidden_values:
+        if sensitive in body_text:
+            raise ValueError(f"Metrics exposition leaked sensitive value or feature name: '{sensitive}'")
+
+    print("[PASS] GET /metrics returned HTTP 200 with all metric families, valid counts, and zero data leakage")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Inference Container Runtime Smoke Test")
     parser.add_argument("--host", default="127.0.0.1", help="Target host (default: 127.0.0.1)")
@@ -363,6 +428,9 @@ def main() -> int:
 
         # 6. Extra field contract rejection test
         test_input_contract_rejection(base_url)
+
+        # 7. Privacy-safe Prometheus metrics endpoint scrape test
+        test_metrics_scrape(base_url)
 
         print("================================================================================")
         print("ALL CONTAINER RUNTIME SMOKE TESTS PASSED SUCCESSFULLY")

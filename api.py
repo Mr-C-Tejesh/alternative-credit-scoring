@@ -13,6 +13,7 @@ Phase 10 implementation:
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +23,14 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 from sklearn.pipeline import Pipeline
 
@@ -291,6 +300,74 @@ class ReadyResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Prometheus Observability & Metrics
+# ---------------------------------------------------------------------------
+
+KNOWN_METRIC_ROUTES: set[str] = {
+    "/health",
+    "/ready",
+    "/v1/predict",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+}
+
+VALID_HTTP_METHODS: set[str] = {
+    "GET",
+    "POST",
+    "HEAD",
+    "OPTIONS",
+    "PUT",
+    "DELETE",
+    "PATCH",
+}
+
+
+class APIMetrics:
+    """Encapsulates Prometheus metric instruments attached to an isolated CollectorRegistry."""
+
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry: CollectorRegistry = registry or CollectorRegistry()
+
+        self.http_requests_total = Counter(
+            "http_requests_total",
+            "Total count of HTTP requests processed by endpoint, method, and response status code.",
+            ["route", "method", "status"],
+            registry=self.registry,
+        )
+
+        self.http_request_duration_seconds = Histogram(
+            "http_request_duration_seconds",
+            "HTTP request processing latency in seconds.",
+            ["route", "method"],
+            buckets=(0.002, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0),
+            registry=self.registry,
+        )
+
+        self.prediction_outcomes_total = Counter(
+            "prediction_outcomes_total",
+            "Total count of prediction requests categorized by operational outcome.",
+            ["model", "outcome"],
+            registry=self.registry,
+        )
+
+        self.model_ready = Gauge(
+            "model_ready",
+            "Operational readiness of the inference model pipeline (1 = ready, 0 = unready).",
+            ["model"],
+            registry=self.registry,
+        )
+
+        self.model_info = Gauge(
+            "model_info",
+            "Metadata describing the active credit scoring model.",
+            ["model", "schema_version"],
+            registry=self.registry,
+        )
+        self.model_info.labels(model=MODEL_IDENTIFIER, schema_version=SCHEMA_VERSION).set(1)
+
+
+# ---------------------------------------------------------------------------
 # Application Factory
 # ---------------------------------------------------------------------------
 
@@ -299,8 +376,12 @@ def create_app(
     model: Pipeline | None = None,
     load_on_startup: bool = True,
     model_loader: Callable[..., Pipeline] | None = None,
+    metrics_registry: CollectorRegistry | None = None,
 ) -> FastAPI:
     """Create and configure the FastAPI application instance."""
+
+    # Isolated metrics registry per application instance (prevents cross-test pollution)
+    metrics = APIMetrics(registry=metrics_registry)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -312,11 +393,13 @@ def create_app(
                 loaded = loader(target_path)
                 app.state.model = loaded
                 app.state.is_ready = True
+                app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(1)
                 logger.info("Model loaded successfully into service state.")
             except Exception as err:
                 logger.error("Failed to load model artifact on startup: %s", type(err).__name__)
                 app.state.model = None
                 app.state.is_ready = False
+                app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(0)
         yield
 
     app = FastAPI(
@@ -337,10 +420,53 @@ def create_app(
     app.state.model = model
     app.state.is_ready = model is not None
     app.state.model_loader = model_loader
+    app.state.metrics = metrics
+    app.state.metrics_registry = metrics.registry
+
+    # Initialize model_ready gauge based on initial model presence
+    app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(1 if model is not None else 0)
+
+    # Safe metrics middleware: uses bounded route labels and excludes /metrics scrapes
+    @app.middleware("http")
+    async def metrics_middleware(request: Request, call_next):
+        # Exclude /metrics scrapes from request metrics to prevent self-observation loops
+        if request.url.path == "/metrics":
+            return await call_next(request)
+
+        raw_path = request.url.path
+        route_label = raw_path if raw_path in KNOWN_METRIC_ROUTES else "unmatched"
+        method_label = request.method if request.method in VALID_HTTP_METHODS else "OTHER"
+
+        start_time = time.perf_counter()
+        status_code = "500"
+        try:
+            response = await call_next(request)
+            status_code = str(response.status_code)
+            return response
+        except Exception:
+            status_code = "500"
+            raise
+        finally:
+            duration = max(0.0, time.perf_counter() - start_time)
+            app_metrics: APIMetrics = app.state.metrics
+            app_metrics.http_requests_total.labels(
+                route=route_label,
+                method=method_label,
+                status=status_code,
+            ).inc()
+            app_metrics.http_request_duration_seconds.labels(
+                route=route_label,
+                method=method_label,
+            ).observe(duration)
 
     # Safe validation exception handler: strips raw user input values
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
+        if request.url.path == "/v1/predict":
+            app.state.metrics.prediction_outcomes_total.labels(
+                model=MODEL_IDENTIFIER, outcome="validation_error"
+            ).inc()
+
         sanitized_errors = []
         for err in exc.errors():
             loc = err.get("loc", ())
@@ -370,6 +496,7 @@ def create_app(
     @app.get("/ready", response_model=ReadyResponse, tags=["Observability"])
     async def readiness_check(response: Response) -> ReadyResponse:
         if app.state.model is not None and getattr(app.state, "is_ready", False):
+            app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(1)
             return ReadyResponse(
                 status="ready",
                 model_loaded=True,
@@ -377,6 +504,7 @@ def create_app(
                 message="Service is ready for inference.",
             )
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(0)
         return ReadyResponse(
             status="unready",
             model_loaded=False,
@@ -395,6 +523,9 @@ def create_app(
     async def predict_endpoint(payload: ApplicantPredictRequest) -> PredictResponse:
         # Check service readiness
         if app.state.model is None or not getattr(app.state, "is_ready", False):
+            app.state.metrics.prediction_outcomes_total.labels(
+                model=MODEL_IDENTIFIER, outcome="service_unready"
+            ).inc()
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Model service is not ready to process predictions.",
@@ -409,8 +540,14 @@ def create_app(
                 top_k_explanations=3,
             )
         except HTTPException:
+            app.state.metrics.prediction_outcomes_total.labels(
+                model=MODEL_IDENTIFIER, outcome="internal_error"
+            ).inc()
             raise
         except Exception as err:
+            app.state.metrics.prediction_outcomes_total.labels(
+                model=MODEL_IDENTIFIER, outcome="internal_error"
+            ).inc()
             logger.error("Inference execution failed: %s", type(err).__name__)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -420,10 +557,17 @@ def create_app(
         # Validate prediction output contract
         prob = float(inference_res.probability)
         if not np.isfinite(prob) or not (0.0 <= prob <= 1.0):
+            app.state.metrics.prediction_outcomes_total.labels(
+                model=MODEL_IDENTIFIER, outcome="internal_error"
+            ).inc()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Model produced an invalid probability value.",
             )
+
+        app.state.metrics.prediction_outcomes_total.labels(
+            model=MODEL_IDENTIFIER, outcome="success"
+        ).inc()
 
         top_increasing = [
             FeatureContributionItem(
@@ -468,6 +612,23 @@ def create_app(
             top_risk_decreasing_factors=top_decreasing,
             disclaimer=DISCLAIMER_TEXT,
             educational_notice=EDUCATIONAL_NOTICE_TEXT,
+        )
+
+    # 4. Observability metrics endpoint: Prometheus text exposition
+    @app.get(
+        "/metrics",
+        tags=["Observability"],
+        summary="Expose operational Prometheus metrics",
+        response_class=Response,
+    )
+    async def metrics_endpoint() -> Response:
+        is_ready = 1 if getattr(app.state, "is_ready", False) else 0
+        app.state.metrics.model_ready.labels(model=MODEL_IDENTIFIER).set(is_ready)
+
+        data = generate_latest(app.state.metrics.registry)
+        return Response(
+            content=data,
+            media_type=CONTENT_TYPE_LATEST,
         )
 
     return app

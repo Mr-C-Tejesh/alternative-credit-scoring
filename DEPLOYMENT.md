@@ -21,8 +21,12 @@ For future hosted demonstration (e.g. Streamlit Community Cloud, containerized s
   matplotlib>=3.8
   joblib>=1.3
   streamlit>=1.35
+  fastapi>=0.110
+  pydantic>=2.6
+  uvicorn>=0.28
+  prometheus-client>=0.20.0
   ```
-- **Port:** Default Streamlit port `8501`.
+- **Port:** Default Streamlit port `8501`, API port `8000`.
 
 ---
 
@@ -91,3 +95,22 @@ Any future deployment must preserve:
 1. **Prominent Synthetic Disclaimers:** Visible warnings at the top of the interface indicating that all data, models, and scores are simulated.
 2. **Runtime Domain Validation:** Never bypass `validate_feature_frame()`; inputs outside the synthetic generator support must be rejected before calling `predict_proba()`.
 3. **No Commercial Underwriting Use:** Strictly prohibit the use of these scores, bands, or feature contributions for actual lending, credit rejection, pricing, or adverse action.
+
+---
+
+## 6. Runtime Observability & Operational Telemetry (`GET /metrics`)
+
+When deploying the inference API (`api.py`) in containerized or staging environments:
+
+1. **Prometheus Scraping Target:**
+   - Scrape endpoint: `http://<host>:8000/metrics`
+   - Content-Type: Prometheus text exposition format (`CONTENT_TYPE_LATEST`).
+   - Self-Observation Avoidance: Scrapes to `/metrics` are bypassed by middleware to prevent artificially inflating HTTP request totals or request latency histograms.
+2. **Cardinality Protection & Data Privacy:**
+   - Route labels are strictly bounded to `KNOWN_METRIC_ROUTES` (`/health`, `/ready`, `/v1/predict`, `/docs`, `/openapi.json`, `/redoc`), mapping all other paths to `"unmatched"`.
+   - Never log or expose applicant financial values, applicant identifiers, predicted probabilities, scores, query strings, or exception stack traces in metric labels or exposition.
+   - Applications maintain isolated `CollectorRegistry` instances per app object, allowing parallel test execution and clean lifecycle teardown.
+3. **Operational Telemetry vs. Predictive Validity:**
+   - Operational metrics (`http_requests_total`, `http_request_duration_seconds`, `prediction_outcomes_total`, `model_ready`) verify process responsiveness, endpoint latency, and HTTP status distributions.
+   - They provide **no evidence** of statistical model accuracy, probability calibration, or real-world borrower creditworthiness.
+   - Real-world validation requires longitudinal tracking of actual loan default outcomes after maturation and independent fairness/DPDP audits.

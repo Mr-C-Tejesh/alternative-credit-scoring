@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 234 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, and HTTP inference API lifecycle/validation contracts:
+The test suite contains 243 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, HTTP inference API contracts, and privacy-safe Prometheus runtime observability:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -322,9 +322,9 @@ To assess feature and score distribution stability on incoming prediction cohort
 
 ---
 
-## 8. HTTP Inference API & Container Deployment
+## 8. HTTP Inference API, Runtime Observability & Container Deployment
 
-Phase 10 implements a production-style, lightweight HTTP inference microservice (`api.py`) powered by FastAPI that serves the trained `models/hybrid_logistic_regression.joblib` pipeline with runtime data contracts, health checks, and explanation decomposition.
+Phase 10 and Phase 11 implement a production-style, lightweight HTTP inference microservice (`api.py`) powered by FastAPI that serves the trained `models/hybrid_logistic_regression.joblib` pipeline with runtime data contracts, health probes, explanation decomposition, and privacy-safe Prometheus runtime observability.
 
 ### A. Service Endpoints
 
@@ -332,7 +332,8 @@ Phase 10 implements a production-style, lightweight HTTP inference microservice 
 | :--- | :--- | :--- | :--- |
 | `GET` | `/health` | Liveness probe confirming process execution (does not claim model readiness) | `200 OK` |
 | `GET` | `/ready` | Readiness probe verifying model pipeline artifact is loaded and ready to serve | `200 OK` (ready), `503 Service Unavailable` (unready) |
-| `POST` | `/v1/predict` | Single-applicant inference returning probability, PDO score, risk band, and top-3 additive explanations | `200 OK` (success), `422 Unprocessable Content` (contract validation error), `503 Service Unavailable` (model unready) |
+| `POST` | `/v1/predict` | Single-applicant inference returning probability, PDO score, risk band, and top-3 additive explanations | `200 OK` (success), `422 Unprocessable Content` (contract error), `503 Service Unavailable` (unready) |
+| `GET` | `/metrics` | Prometheus text exposition of operational telemetry (bounded labels, no applicant data) | `200 OK` |
 
 ### B. Input Validation Contract & Privacy Protection
 
@@ -408,7 +409,78 @@ curl -X POST http://127.0.0.1:8000/v1/predict \
 }
 ```
 
-### D. Containerization & Deployment Execution
+### D. Privacy-Safe Prometheus Runtime Observability (`GET /metrics`)
+
+The API exposes low-overhead, privacy-safe Prometheus telemetry via `GET /metrics` using `prometheus-client`.
+
+#### 1. Available Metric Instruments
+
+| Metric Name | Instrument | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `http_requests_total` | Counter | `route`, `method`, `status` | Total count of HTTP requests processed by endpoint, method, and response status code. |
+| `http_request_duration_seconds` | Histogram | `route`, `method` | HTTP request processing latency in seconds (buckets: 2ms, 5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s). |
+| `prediction_outcomes_total` | Counter | `model`, `outcome` | Prediction requests categorized by outcome: `success`, `validation_error`, `service_unready`, or `internal_error`. |
+| `model_ready` | Gauge | `model` | Operational readiness gauge: `1` when model is loaded and ready, `0` when unready. |
+| `model_info` | Gauge | `model`, `schema_version` | Static metadata describing the active model identifier and API schema version. |
+
+#### 2. How to Query `/metrics` Locally
+
+```bash
+# Start API locally (or via Docker)
+python -m uvicorn api:app --port 8000
+
+# Query Prometheus metrics exposition
+curl -s http://127.0.0.1:8000/metrics
+```
+
+Example exposition output:
+```prometheus
+# HELP http_requests_total Total count of HTTP requests processed by endpoint, method, and response status code.
+# TYPE http_requests_total counter
+http_requests_total{method="GET",route="/health",status="200"} 1.0
+http_requests_total{method="POST",route="/v1/predict",status="200"} 1.0
+http_requests_total{method="POST",route="/v1/predict",status="422"} 1.0
+# HELP http_request_duration_seconds HTTP request processing latency in seconds.
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_bucket{le="0.05",method="POST",route="/v1/predict"} 1.0
+http_request_duration_seconds_bucket{le="+Inf",method="POST",route="/v1/predict"} 1.0
+http_request_duration_seconds_count{method="POST",route="/v1/predict"} 1.0
+http_request_duration_seconds_sum{method="POST",route="/v1/predict"} 0.0124
+# HELP prediction_outcomes_total Total count of prediction requests categorized by operational outcome.
+# TYPE prediction_outcomes_total counter
+prediction_outcomes_total{model="hybrid_logistic_regression",outcome="success"} 1.0
+prediction_outcomes_total{model="hybrid_logistic_regression",outcome="validation_error"} 1.0
+# HELP model_ready Operational readiness of the inference model pipeline (1 = ready, 0 = unready).
+# TYPE model_ready gauge
+model_ready{model="hybrid_logistic_regression"} 1.0
+# HELP model_info Metadata describing the active credit scoring model.
+# TYPE model_info gauge
+model_info{model="hybrid_logistic_regression",schema_version="v1"} 1.0
+```
+
+#### 3. Metric-Label Cardinality & Privacy Safeguards
+
+- **Bounded Route Labeling:** Raw URL paths are never used directly as metric labels. Endpoints are strictly checked against `KNOWN_METRIC_ROUTES` (`/health`, `/ready`, `/v1/predict`, `/docs`, `/openapi.json`, `/redoc`). Any arbitrary, unmapped, or malicious path is labeled as `"unmatched"`.
+- **Bounded Method Labeling:** HTTP methods are validated against `VALID_HTTP_METHODS`. Any unexpected verb is labeled as `"OTHER"`.
+- **Zero Sensitive Data Exposure:** Metrics never expose applicant attributes, applicant IDs, financial inputs, predicted probabilities, display scores, explanation contributions, query strings, or exception stack traces.
+- **Self-Observation Loop Exclusion:** Requests to `GET /metrics` are explicitly excluded from `http_requests_total` and `http_request_duration_seconds` to avoid observer feedback loops inflating traffic measurements.
+- **Test Isolation & Application Lifecycle:** `create_app()` initializes a dedicated `CollectorRegistry()` per application instance, ensuring multiple application instances can be tested without duplicate-metric registration failures.
+
+#### 4. Critical Observability Boundary: Telemetry vs. Drift vs. Model Performance
+
+It is critical to distinguish between three fundamentally different layers of system observation:
+
+1. **Service Health & Operational Telemetry (Phase 11):**
+   - Measures web process uptime, CPU responsiveness, endpoint throughput, latency percentiles, and HTTP status distributions.
+   - *Limitation:* Proves the microservice is executing without crashes, but provides **zero** evidence of model accuracy, calibration, or creditworthiness.
+2. **Input Drift & Feature Monitoring (Phase 09):**
+   - Measures statistical divergence (PSI, KS distance) between reference feature distributions and incoming production batches.
+   - *Limitation:* Identifies when incoming applicant distributions diverge from training baselines, but cannot prove prediction failure without observed repayment outcomes.
+3. **Model Predictive Performance (Validation & Maturation):**
+   - Measures true discrimination (ROC-AUC, Gini, KS) and probability calibration (ECE, Brier score) against **ground-truth loan default outcomes** over a 12-month performance window.
+   - *Limitation:* Cannot be computed in real time at inference. Operational uptime and low latency are purely operational telemetry and must never be misconstrued as evidence of model validity or real-world creditworthiness.
+
+### E. Containerization & Deployment Execution
 
 ```bash
 # Build the reproducible container image
@@ -417,9 +489,10 @@ docker build -t alternative-credit-scoring-api:latest .
 # Run the container bound strictly to loopback interface (least-privilege appuser)
 docker run --rm -p 127.0.0.1:8000:8000 alternative-credit-scoring-api:latest
 
-# Verify health status
+# Verify health status and metrics
 curl -s http://127.0.0.1:8000/health
 curl -s http://127.0.0.1:8000/ready
+curl -s http://127.0.0.1:8000/metrics
 ```
 
 > [!NOTE]
@@ -507,12 +580,12 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 234 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 243 comprehensive automated unit and AppTest tests
 ├── scripts/
 │   └── test_container_runtime.py # CI & local container runtime smoke test suite
 ├── .dockerignore                # Container build context exclusions
 ├── Dockerfile                   # Reproducible non-root container build (python:3.12-slim)
-├── api.py                       # FastAPI HTTP inference service (/health, /ready, /v1/predict)
+├── api.py                       # FastAPI HTTP inference service (/health, /ready, /v1/predict, /metrics)
 ├── app.py                       # Streamlit web demonstration
 ├── monitoring.py                # Batch inference monitoring & data-drift diagnostics
 ├── predict.py                   # Command-line prediction and explanation demo

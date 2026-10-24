@@ -4259,5 +4259,210 @@ class TestInferenceAPI(unittest.TestCase):
         self.assertIsInstance(api_mod.app, api.FastAPI)
 
 
+# ---------------------------------------------------------------------------
+# Phase 11: API Observability, Metrics & Privacy-Safe Operations Tests
+# ---------------------------------------------------------------------------
+
+class TestAPIObservabilityAndMetrics(unittest.TestCase):
+    """Automated tests for Prometheus metrics, bounded labels, test isolation, and privacy."""
+
+    def setUp(self):
+        self.valid_applicant_payload = {
+            "age_years": 32,
+            "monthly_income_inr": 55000.0,
+            "employment_tenure_years": 4.5,
+            "debt_to_income_ratio": 0.28,
+            "existing_loan_count": 1,
+            "credit_utilization_ratio": 0.35,
+            "prior_delinquencies_24m": 0,
+            "bureau_history_available": 1,
+            "bureau_score": 720.0,
+            "utility_payment_timeliness": 0.95,
+            "rental_payment_timeliness": 0.92,
+            "digital_payment_regularity": 0.88,
+            "cashflow_stability_index": 0.75,
+            "alternative_history_months": 18,
+        }
+
+    def test_metrics_endpoint_exposition_format(self):
+        """GET /metrics returns 200 with Prometheus text format and all expected families."""
+        app = api.create_app()
+        with TestClient(app) as client:
+            resp = client.get("/metrics")
+            self.assertEqual(resp.status_code, 200)
+            self.assertIn("text/plain", resp.headers.get("content-type", ""))
+            self.assertEqual(resp.headers.get("content-type"), api.CONTENT_TYPE_LATEST)
+
+            body = resp.text
+            # Verify metric HELP and TYPE definitions exist
+            expected_metric_families = [
+                "http_requests_total",
+                "http_request_duration_seconds",
+                "prediction_outcomes_total",
+                "model_ready",
+                "model_info",
+            ]
+            for family in expected_metric_families:
+                self.assertIn(f"# HELP {family}", body)
+                self.assertIn(f"# TYPE {family}", body)
+
+    def test_http_requests_total_increments_for_endpoints(self):
+        """Request counters increase with bounded route, method, and status labels."""
+        app = api.create_app()
+        with TestClient(app) as client:
+            # Execute requests across endpoints
+            r1 = client.get("/health")
+            self.assertEqual(r1.status_code, 200)
+
+            r2 = client.get("/ready")
+            self.assertEqual(r2.status_code, 200)
+
+            r3 = client.post("/v1/predict", json=self.valid_applicant_payload)
+            self.assertEqual(r3.status_code, 200)
+
+            # Scrape metrics and check exact series
+            metrics_resp = client.get("/metrics")
+            self.assertEqual(metrics_resp.status_code, 200)
+            body = metrics_resp.text
+
+            self.assertIn('http_requests_total{method="GET",route="/health",status="200"} 1.0', body)
+            self.assertIn('http_requests_total{method="GET",route="/ready",status="200"} 1.0', body)
+            self.assertIn('http_requests_total{method="POST",route="/v1/predict",status="200"} 1.0', body)
+
+    def test_http_request_duration_histogram_recorded(self):
+        """Duration observations are recorded with valid finite sum and counts."""
+        app = api.create_app()
+        with TestClient(app) as client:
+            client.post("/v1/predict", json=self.valid_applicant_payload)
+
+            metrics_resp = client.get("/metrics")
+            body = metrics_resp.text
+
+            self.assertIn('http_request_duration_seconds_count{method="POST",route="/v1/predict"} 1.0', body)
+            self.assertIn('http_request_duration_seconds_bucket{le="+Inf",method="POST",route="/v1/predict"} 1.0', body)
+            self.assertIn('http_request_duration_seconds_sum{method="POST",route="/v1/predict"}', body)
+
+    def test_prediction_outcomes_distinguishes_all_categories(self):
+        """Outcome counter distinguishes success, validation_error, service_unready, and internal_error."""
+        # 1. Success & Validation Error on ready app
+        app = api.create_app()
+        with TestClient(app) as client:
+            # Success
+            r_succ = client.post("/v1/predict", json=self.valid_applicant_payload)
+            self.assertEqual(r_succ.status_code, 200)
+
+            # Validation error (missing required fields)
+            invalid_payload = {"age_years": 30}
+            r_val = client.post("/v1/predict", json=invalid_payload)
+            self.assertEqual(r_val.status_code, 422)
+
+            metrics_ready = client.get("/metrics").text
+            self.assertIn('prediction_outcomes_total{model="hybrid_logistic_regression",outcome="success"} 1.0', metrics_ready)
+            self.assertIn('prediction_outcomes_total{model="hybrid_logistic_regression",outcome="validation_error"} 1.0', metrics_ready)
+
+        # 2. Service Unready on unready app
+        unready_app = api.create_app(load_on_startup=False)
+        with TestClient(unready_app) as client_unready:
+            r_unready = client_unready.post("/v1/predict", json=self.valid_applicant_payload)
+            self.assertEqual(r_unready.status_code, 503)
+
+            metrics_unready = client_unready.get("/metrics").text
+            self.assertIn('prediction_outcomes_total{model="hybrid_logistic_regression",outcome="service_unready"} 1.0', metrics_unready)
+
+        # 3. Internal Error when model execution fails unexpectedly
+        error_app = api.create_app()
+        with TestClient(error_app) as client_err:
+            with patch("api.run_inference_pipeline", side_effect=RuntimeError("Simulated inference engine failure")):
+                r_err = client_err.post("/v1/predict", json=self.valid_applicant_payload)
+                self.assertEqual(r_err.status_code, 500)
+
+            metrics_err = client_err.get("/metrics").text
+            self.assertIn('prediction_outcomes_total{model="hybrid_logistic_regression",outcome="internal_error"} 1.0', metrics_err)
+
+    def test_metrics_scrape_does_not_inflate_request_counters(self):
+        """Excluding /metrics from request metrics prevents self-observation feedback loops."""
+        app = api.create_app()
+        with TestClient(app) as client:
+            # Scrape metrics multiple times
+            for _ in range(5):
+                resp = client.get("/metrics")
+                self.assertEqual(resp.status_code, 200)
+
+            body = client.get("/metrics").text
+            # No request metric should have route="/metrics"
+            self.assertNotIn('route="/metrics"', body)
+
+    def test_unknown_routes_map_to_unmatched_bounded_cardinality(self):
+        """Unknown paths and query strings map to route='unmatched' without unbounded labels."""
+        app = api.create_app()
+        with TestClient(app) as client:
+            # Query strings and arbitrary URL paths
+            client.get("/nonexistent/endpoint/12345?query_param=sensitive_token_abc")
+            client.get("/arbitrary/hack/attempt?user_id=attacker999")
+
+            body = client.get("/metrics").text
+            # Should have recorded route="unmatched"
+            self.assertIn('http_requests_total{method="GET",route="unmatched",status="404"} 2.0', body)
+            # Must NOT expose arbitrary URL paths or query strings
+            self.assertNotIn("sensitive_token_abc", body)
+            self.assertNotIn("attacker999", body)
+            self.assertNotIn("12345", body)
+            self.assertNotIn("/nonexistent/endpoint", body)
+
+    def test_multiple_app_instances_isolation(self):
+        """Multiple app instances can be created without duplicate-registry registration errors."""
+        app1 = api.create_app()
+        app2 = api.create_app()
+        app3 = api.create_app(load_on_startup=False)
+
+        with TestClient(app1) as c1, TestClient(app2) as c2, TestClient(app3) as c3:
+            # app1 gets a request
+            c1.get("/health")
+
+            m1 = c1.get("/metrics").text
+            m2 = c2.get("/metrics").text
+            m3 = c3.get("/metrics").text
+
+            self.assertIn('http_requests_total{method="GET",route="/health",status="200"} 1.0', m1)
+            self.assertNotIn('http_requests_total{method="GET",route="/health",status="200"}', m2)
+            self.assertNotIn('http_requests_total{method="GET",route="/health",status="200"}', m3)
+
+            # Ready states should be distinct
+            self.assertIn('model_ready{model="hybrid_logistic_regression"} 1.0', m1)
+            self.assertIn('model_ready{model="hybrid_logistic_regression"} 1.0', m2)
+            self.assertIn('model_ready{model="hybrid_logistic_regression"} 0.0', m3)
+
+    def test_sensitive_inputs_never_appear_in_metrics(self):
+        """Sensitive applicant IDs, values, and features submitted never leak into metrics."""
+        app = api.create_app()
+        with TestClient(app) as client:
+            malicious_payload = self.valid_applicant_payload.copy()
+            malicious_payload["applicant_id"] = "LEAKED_APPLICANT_ID_SECRET_123"
+            malicious_payload["monthly_income_inr"] = 9999888877.0
+            malicious_payload["secret_note"] = "confidential_credit_memo"
+
+            resp = client.post("/v1/predict", json=malicious_payload)
+            self.assertEqual(resp.status_code, 422)
+
+            metrics_text = client.get("/metrics").text
+            self.assertNotIn("LEAKED_APPLICANT_ID_SECRET_123", metrics_text)
+            self.assertNotIn("9999888877", metrics_text)
+            self.assertNotIn("confidential_credit_memo", metrics_text)
+
+    def test_model_ready_and_model_info_gauges(self):
+        """model_ready and model_info gauges accurately reflect operational status and metadata."""
+        app = api.create_app()
+        with TestClient(app) as client:
+            text = client.get("/metrics").text
+            self.assertIn('model_ready{model="hybrid_logistic_regression"} 1.0', text)
+            self.assertIn('model_info{model="hybrid_logistic_regression",schema_version="v1"} 1.0', text)
+
+        unready_app = api.create_app(load_on_startup=False)
+        with TestClient(unready_app) as client_unready:
+            unready_text = client_unready.get("/metrics").text
+            self.assertIn('model_ready{model="hybrid_logistic_regression"} 0.0', unready_text)
+            self.assertIn('model_info{model="hybrid_logistic_regression",schema_version="v1"} 1.0', unready_text)
+
+
 if __name__ == "__main__":
     unittest.main()
