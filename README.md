@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 195 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, and controlled input stress testing:
+The test suite contains 196 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, and controlled input stress testing:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -235,7 +235,7 @@ To investigate how sensitive the fitted models are to degradation in alternative
   - **Positive degradation indicates worse performance; negative indicates apparent improvement.**
 - **Key Empirical Observations:**
   - *Traditional Baseline Invariance:* In all 35 scenarios, the traditional model's metrics and predictions remained completely unchanged ($\Delta = 0.0000$), serving as a negative control confirming that degradations in hybrid models stem exclusively from alternative-data dependencies.
-  - *Graceful Fallback Under Total Loss:* Complete dropout of all alternative features (`joint_missingness_rate_1.00`) produced the largest degradation (Hybrid HGB ROC-AUC drops from 0.9063 to 0.7682; Hybrid LR drops from 0.9098 to 0.7820). Both hybrid pipelines fall back gracefully to traditional baseline performance levels (~0.8071) via median imputation.
+  - *Total Alternative-Data Dropout as an Important Vulnerability:* Complete loss of all alternative features (`joint_missingness_rate_1.00`) produced the largest degradation across both hybrid models (Hybrid HGB ROC-AUC drops from 0.9063 to 0.7682; Hybrid LR drops from 0.9098 to 0.7820). While median imputation and missingness indicators allow both hybrid pipelines to remain executable without runtime crashes, their resulting discrimination falls **below** the standalone traditional baseline's clean ROC-AUC (0.8071). The hybrid models do not automatically switch to the dedicated traditional model architecture; median imputation is an inference preprocessing behavior rather than an architectural model-selection fallback. Total alternative-source loss is therefore an important vulnerability resulting in sub-baseline performance.
   - *Bounded Noise Impact:* Continuous measurement noise up to 20% range reduced ROC-AUC by less than 0.02 across all single-feature scenarios. Cashflow stability and rental timeliness were the most noise-sensitive continuous signals.
   - *Apparent Inverted Deltas:* In 23 of 735 evaluations (3.1%), degradation was slightly negative (e.g. ECE improving by ~0.004) due to median imputation shrinking extreme predicted probabilities toward central tendency, which mitigates overconfidence in calibration bins.
 - **Synthetic Data & Governance Disclaimer:**
@@ -243,7 +243,7 @@ To investigate how sensitive the fitted models are to degradation in alternative
 - **Deliverables (`reports/stress_testing/`):**
   - `scenario_metrics.csv`: 735 evaluation rows recording metric values, sample counts, mean probabilities, and absolute probability change summaries.
   - `scenario_deltas.csv`: 735 comparison rows recording clean reference metrics, scenario metrics, raw deltas, and direction-adjusted degradation.
-  - `stress_test_metadata.json`: Machine-readable metadata with split parameters, scenario definitions, seeds, feature bounds, and runtime dependency versions.
+  - `stress_test_metadata.json`: Machine-readable metadata with split parameters, scenario definitions, seeds, feature bounds, and runtime dependency versions (identical across repeated runs with identical seed, with the intentional exception of the `generated_at_utc` execution timestamp).
   - `stress_test_report.md`: Comprehensive audit report with methodology, scenario matrix, model-by-model findings, largest degradations, and limitation notices.
 
 ---
@@ -327,7 +327,7 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 195 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 196 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── stress_testing.py            # Controlled input-degradation stress testing & sensitivity analysis

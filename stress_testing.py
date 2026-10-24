@@ -557,10 +557,15 @@ def run_stress_testing_experiment(
         .to_dict(orient="records")
     )
 
+    try:
+        display_data_path = str(data_path.resolve().relative_to(ROOT.resolve()))
+    except (ValueError, RuntimeError):
+        display_data_path = str(data_path)
+
     metadata: dict[str, Any] = {
         "generated_at_utc": timestamp,
         "dataset_settings": {
-            "data_path": str(data_path),
+            "data_path": display_data_path,
             "n_total_records": len(df),
             "test_fraction": test_size,
             "split_seed": split_seed,
@@ -653,12 +658,15 @@ def generate_stress_test_report(
         "1. **Traditional Baseline as Negative Control**: Because the traditional model uses only traditional bureau and demographic features,",
         "   its predictions and evaluation metrics remained completely untouched (0.0000 delta and 0.0000 probability change across all 34 stress scenarios).",
         "   This confirms that all observed degradations in hybrid models are strictly attributable to their reliance on alternative data.",
-        "2. **Graceful Degradation Under Missingness**: Total loss of the alternative data source (`joint_missingness_rate_1.00`)",
+        "2. **Total Alternative-Data Dropout as an Important Vulnerability**: Total loss of the alternative data source (`joint_missingness_rate_1.00`)",
         "   produced the largest overall degradation across both hybrid models. The Hybrid HistGradientBoosting model experienced a ROC-AUC decline",
         f"   from **{clean_metrics['Hybrid (HistGradientBoosting)']['roc_auc']:.4f}** to **{scenario_metrics_df[(scenario_metrics_df['model_name'] == 'Hybrid (HistGradientBoosting)') & (scenario_metrics_df['scenario_id'] == 'joint_missingness_rate_1.00') & (scenario_metrics_df['metric'] == 'roc_auc')]['metric_value'].iloc[0]:.4f}** (degradation: +{scenario_deltas_df[(scenario_deltas_df['model_name'] == 'Hybrid (HistGradientBoosting)') & (scenario_deltas_df['scenario_id'] == 'joint_missingness_rate_1.00') & (scenario_deltas_df['metric'] == 'roc_auc')]['direction_adjusted_degradation'].iloc[0]:.4f}),",
         f"   while Hybrid Logistic Regression declined from **{clean_metrics['Hybrid (traditional + alternative)']['roc_auc']:.4f}** to **{scenario_metrics_df[(scenario_metrics_df['model_name'] == 'Hybrid (traditional + alternative)') & (scenario_metrics_df['scenario_id'] == 'joint_missingness_rate_1.00') & (scenario_metrics_df['metric'] == 'roc_auc')]['metric_value'].iloc[0]:.4f}**.",
-        "   Critically, both hybrid models remained functional and maintained discrimination comparable to the traditional baseline (**0.8071**),",
-        "   demonstrating robust pipeline fallback via median imputation and missingness indicators.",
+        f"   Crucially, while both hybrid pipelines continue producing predictions due to median imputation and missingness indicators,",
+        f"   their observed discrimination falls below the standalone traditional model's clean ROC-AUC (**{clean_metrics['Traditional baseline']['roc_auc']:.4f}**).",
+        "   The hybrid models do not automatically switch to the traditional baseline architecture; median imputation and existing missingness",
+        "   indicators are inference preprocessing behavior, not a model-selection fallback. Total alternative-source loss is therefore an",
+        "   important failure scenario resulting in sub-baseline performance, not proof of robust fallback performance.",
         "3. **Bounded Sensitivity to Measurement Noise**: Injecting additive zero-mean Gaussian noise up to 20% of synthetic domain range",
         "   caused modest discrimination declines (ROC-AUC degradation < 0.02 across all single-feature continuous noise scenarios).",
         "   Cashflow stability and rental timeliness were the most noise-sensitive continuous alternative features.",
@@ -875,6 +883,10 @@ def generate_stress_test_report(
         "```bash",
         ".venv/bin/python stress_testing.py --seed 2028",
         "```",
+        "",
+        "*Note on Reproducibility:* Repeated executions with identical configuration produce byte-identical `scenario_metrics.csv`,",
+        "`scenario_deltas.csv`, and `stress_test_report.md`. The metadata file `stress_test_metadata.json` is identical across runs",
+        "except for `generated_at_utc`, which intentionally records the runtime execution timestamp for provenance tracking.",
     ])
 
     return "\n".join(lines) + "\n"

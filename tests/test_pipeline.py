@@ -3327,15 +3327,59 @@ class TestStressTestingSensitivityAnalysis(unittest.TestCase):
         self.assertIn("Negative Control", self.report)
 
     def test_repeated_execution_reproducibility(self):
-        """Repeated execution with identical configuration must yield byte-identical outputs."""
-        m2, d2, meta2, rep2 = stress_testing.run_stress_testing_experiment(
+        """Repeated execution produces identical CSVs, report markdown, and metadata excluding generated_at_utc."""
+        # 1. Normal executions without injected timestamp produce identical outputs excluding audit timestamp
+        m_a, d_a, meta_a, rep_a = stress_testing.run_stress_testing_experiment(base_seed=2028)
+        m_b, d_b, meta_b, rep_b = stress_testing.run_stress_testing_experiment(base_seed=2028)
+
+        pd.testing.assert_frame_equal(m_a, m_b)
+        pd.testing.assert_frame_equal(d_a, d_b)
+        self.assertEqual(rep_a, rep_b)
+        self.assertIn("generated_at_utc", meta_a)
+        self.assertIn("generated_at_utc", meta_b)
+
+        meta_a_no_ts = {k: v for k, v in meta_a.items() if k != "generated_at_utc"}
+        meta_b_no_ts = {k: v for k, v in meta_b.items() if k != "generated_at_utc"}
+        self.assertEqual(meta_a_no_ts, meta_b_no_ts)
+
+        # 2. Injecting a fixed timestamp produces full metadata equality
+        m_fixed, d_fixed, meta_fixed, rep_fixed = stress_testing.run_stress_testing_experiment(
             base_seed=2028,
             execution_timestamp="2026-01-01T00:00:00+00:00",
         )
-        pd.testing.assert_frame_equal(self.metrics_df, m2)
-        pd.testing.assert_frame_equal(self.deltas_df, d2)
-        self.assertEqual(self.metadata, meta2)
-        self.assertEqual(self.report, rep2)
+        self.assertEqual(self.metadata, meta_fixed)
+        self.assertEqual(self.report, rep_fixed)
+
+    def test_total_dropout_interpretation_accuracy(self):
+        """Total alternative dropout ROC-AUC must be lower than standalone traditional baseline and accurately reported."""
+        clean_trad_auc = self.metadata["clean_baseline_metrics"]["Traditional baseline"]["roc_auc"]
+
+        lr_rows = self.metrics_df[
+            (self.metrics_df["model_name"] == "Hybrid (traditional + alternative)")
+            & (self.metrics_df["scenario_id"] == "joint_missingness_rate_1.00")
+            & (self.metrics_df["metric"] == "roc_auc")
+        ]
+        self.assertEqual(len(lr_rows), 1)
+        dropout_lr_auc = lr_rows["metric_value"].iloc[0]
+
+        hgb_rows = self.metrics_df[
+            (self.metrics_df["model_name"] == "Hybrid (HistGradientBoosting)")
+            & (self.metrics_df["scenario_id"] == "joint_missingness_rate_1.00")
+            & (self.metrics_df["metric"] == "roc_auc")
+        ]
+        self.assertEqual(len(hgb_rows), 1)
+        dropout_hgb_auc = hgb_rows["metric_value"].iloc[0]
+
+        # Empirical reality: Under total alternative dropout, both hybrid models perform worse than dedicated baseline
+        self.assertLess(dropout_lr_auc, clean_trad_auc)
+        self.assertLess(dropout_hgb_auc, clean_trad_auc)
+
+        # Audit report text must accurately convey that hybrid discrimination drops below traditional baseline
+        self.assertIn("falls below the standalone traditional model's clean ROC-AUC", self.report)
+        self.assertIn("not a model-selection fallback", self.report)
+        # Inaccurate claims of baseline recovery or comparable discrimination must be absent
+        self.assertNotIn("maintained discrimination comparable to the traditional baseline", self.report)
+        self.assertNotIn("fallback to baseline-level performance", self.report)
 
     def test_cli_execution_smoke(self):
         """CLI main entrypoint must execute cleanly and return exit code 0."""

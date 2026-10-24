@@ -21,12 +21,15 @@ The experiment evaluated **3 serialized models** on **2,000 held-out synthetic t
 1. **Traditional Baseline as Negative Control**: Because the traditional model uses only traditional bureau and demographic features,
    its predictions and evaluation metrics remained completely untouched (0.0000 delta and 0.0000 probability change across all 34 stress scenarios).
    This confirms that all observed degradations in hybrid models are strictly attributable to their reliance on alternative data.
-2. **Graceful Degradation Under Missingness**: Total loss of the alternative data source (`joint_missingness_rate_1.00`)
+2. **Total Alternative-Data Dropout as an Important Vulnerability**: Total loss of the alternative data source (`joint_missingness_rate_1.00`)
    produced the largest overall degradation across both hybrid models. The Hybrid HistGradientBoosting model experienced a ROC-AUC decline
    from **0.9063** to **0.7682** (degradation: +0.1382),
    while Hybrid Logistic Regression declined from **0.9098** to **0.7820**.
-   Critically, both hybrid models remained functional and maintained discrimination comparable to the traditional baseline (**0.8071**),
-   demonstrating robust pipeline fallback via median imputation and missingness indicators.
+   Crucially, while both hybrid pipelines continue producing predictions due to median imputation and missingness indicators,
+   their observed discrimination falls below the standalone traditional model's clean ROC-AUC (**0.8071**).
+   The hybrid models do not automatically switch to the traditional baseline architecture; median imputation and existing missingness
+   indicators are inference preprocessing behavior, not a model-selection fallback. Total alternative-source loss is therefore an
+   important failure scenario resulting in sub-baseline performance, not proof of robust fallback performance.
 3. **Bounded Sensitivity to Measurement Noise**: Injecting additive zero-mean Gaussian noise up to 20% of synthetic domain range
    caused modest discrimination declines (ROC-AUC degradation < 0.02 across all single-feature continuous noise scenarios).
    Cashflow stability and rental timeliness were the most noise-sensitive continuous alternative features.
@@ -39,7 +42,7 @@ The experiment evaluated **3 serialized models** on **2,000 held-out synthetic t
 ## Methodology & Experimental Design
 
 ### Evaluation Protocol
-- **Dataset**: `/Users/tejesh/Coding/Projects/alternative_credit_scoring/data/synthetic_applicants.csv` (10,000 rows).
+- **Dataset**: `data/synthetic_applicants.csv` (10,000 rows).
 - **Held-Out Test Split**: Fraction = `0.20`, Split Seed = `2026` (stratified on `default_within_12_months`).
 - **Test Cohort**: 2,000 rows (550 defaults, 1,450 non-defaults).
 - **Models Evaluated**:
@@ -185,3 +188,7 @@ indicating that the scenario metric appeared marginally better than clean baseli
 ```bash
 .venv/bin/python stress_testing.py --seed 2028
 ```
+
+*Note on Reproducibility:* Repeated executions with identical configuration produce byte-identical `scenario_metrics.csv`,
+`scenario_deltas.csv`, and `stress_test_report.md`. The metadata file `stress_test_metadata.json` is identical across runs
+except for `generated_at_utc`, which intentionally records the runtime execution timestamp for provenance tracking.

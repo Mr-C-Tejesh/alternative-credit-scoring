@@ -1,7 +1,7 @@
 {
-  "generated_at_utc": "2026-10-23T21:03:38.768798+00:00",
+  "generated_at_utc": "2026-10-24T04:50:30.137079+00:00",
   "dataset_settings": {
-    "data_path": "/Users/tejesh/Coding/Projects/alternative_credit_scoring/data/synthetic_applicants.csv",
+    "data_path": "data/synthetic_applicants.csv",
     "n_total_records": 10000,
     "test_fraction": 0.2,
     "split_seed": 2026,
