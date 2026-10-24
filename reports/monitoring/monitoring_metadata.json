@@ -1,0 +1,81 @@
+{
+  "generated_at_utc": "2026-10-24T05:13:29.513397+00:00",
+  "phase": "Phase 09 \u2014 Batch Inference Monitoring & Data-Drift Diagnostics",
+  "execution_mode": "default_demonstration",
+  "dataset_settings": {
+    "reference_path": "data/synthetic_applicants.csv (training partition: 80%)",
+    "batch_path": "data/synthetic_applicants.csv (held-out test partition: 20%)",
+    "reference_rows": 8000,
+    "incoming_rows": 2000,
+    "split_settings": {
+      "seed": 2026,
+      "test_size": 0.2,
+      "stratify": "default_within_12_months"
+    }
+  },
+  "monitored_features": {
+    "total_count": 14,
+    "traditional_features": [
+      "age_years",
+      "monthly_income_inr",
+      "employment_tenure_years",
+      "debt_to_income_ratio",
+      "existing_loan_count",
+      "credit_utilization_ratio",
+      "prior_delinquencies_24m",
+      "bureau_history_available",
+      "bureau_score"
+    ],
+    "alternative_features": [
+      "utility_payment_timeliness",
+      "rental_payment_timeliness",
+      "digital_payment_regularity",
+      "cashflow_stability_index",
+      "alternative_history_months"
+    ]
+  },
+  "models_monitored": [
+    "Traditional baseline",
+    "Hybrid (traditional + alternative)",
+    "Hybrid (HistGradientBoosting)"
+  ],
+  "binning_configuration": {
+    "method": "reference_quantiles_with_infinite_tails",
+    "n_bins": 10,
+    "smoothing_epsilon": 0.0001,
+    "handling_constant_features": "3_bin_delta_partition_around_constant",
+    "handling_repeated_quantiles": "unique_quantile_consolidation"
+  },
+  "threshold_settings": {
+    "psi_warning_threshold": 0.1,
+    "psi_critical_threshold": 0.25,
+    "missingness_warning_threshold_pp": 5.0,
+    "missingness_critical_threshold_pp": 15.0,
+    "min_sample_size_ks": 5
+  },
+  "summary_counts": {
+    "features_total": 14,
+    "features_ok": 14,
+    "features_warning": 0,
+    "features_critical": 0,
+    "models_total": 3,
+    "models_ok": 3,
+    "models_warning": 0,
+    "models_critical": 0
+  },
+  "monitoring_limitations": [
+    "All underlying data, models, and scores are simulated for machine learning pipeline demonstration.",
+    "This module is strictly an engineering observability layer, not an automated retraining pipeline or lending decision engine.",
+    "Distribution drift is not equivalent to performance degradation; without ground-truth labels in production, accuracy and calibration cannot be evaluated.",
+    "Absence of detected statistical drift does not prove model safety or robustness against unmonitored shifts.",
+    "Population Stability Index (PSI) and missingness thresholds are operational heuristics, not universal regulatory or statistical standards.",
+    "Monitoring outputs must never be used to make lending decisions, price credit, approve/reject applicants, or evaluate real-world fairness."
+  ],
+  "environment": {
+    "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "numpy_version": "2.5.4",
+    "pandas_version": "3.0.6",
+    "scikit_learn_version": "1.7.2",
+    "matplotlib_version": "3.11.2"
+  }
+}

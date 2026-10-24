@@ -70,6 +70,19 @@ To investigate the empirical sensitivity of the fixed, fitted model artifacts to
 - **Methodological Limitations & Governance Warning:**
   These scenarios assess controlled input degradation on synthetic held-out observations; they do **not** establish real-world model robustness, stability under covariate shift, or algorithmic fairness. Ground-truth labels are preserved intentionally to isolate input sensitivity, which does not simulate real-world macroeconomic or borrower population shifts.
 
+## Batch Inference Monitoring & Data-Drift Diagnostics
+
+An offline batch-monitoring and data-drift diagnostics module is documented in `monitoring.py` and `reports/monitoring/monitoring_report.md`:
+- **Protocol & Monitored Entities:** Evaluates incoming feature batches against reference feature datasets across all 14 predictor features (`ALL_FEATURES`) and all 3 fitted model pipelines (`Traditional baseline`, `Hybrid LR`, `Hybrid HistGradientBoosting`).
+- **Drift Diagnostics:** Measures feature-level Population Stability Index (PSI) using reference-derived deciles with infinite outer tails and Laplace smoothing ($\epsilon = 10^{-4}$), two-sample Kolmogorov–Smirnov (KS) tests on non-missing numeric values, independent missingness rate changes in percentage points, and model score shifts (mean predicted probability change, score percentiles, and score decile PSI).
+- **Default Baseline Demonstration:** Evaluates the 2,000-row held-out test split against the 8,000-row reference training split under seed `2026`. All 14 features and all 3 model score distributions exhibit near-zero drift (all feature PSIs $< 0.010$, all score PSIs $< 0.008$) and zero operational alerts, confirming stability under i.i.d. synthetic partitioning.
+- **Explicit Methodological Limitations & Governance Boundaries:**
+  1. *Synthetic Demonstration Only:* All source data, fitted models, probability predictions, and drift measurements are simulated for machine learning pipeline demonstration.
+  2. *Drift Is Not Performance Degradation:* Statistical divergence between incoming and reference feature distributions indicates input divergence, but does not prove model accuracy or ranking failure.
+  3. *Unlabeled Production Constraint:* Without ground-truth outcome labels on incoming batches, predictive accuracy, ROC-AUC, Brier score, and probability calibration cannot be assessed.
+  4. *Heuristic Operational Thresholds:* The PSI thresholds (warning $\ge 0.10$, critical $\ge 0.25$) and missingness thresholds (warning $\ge 5.0$ pp, critical $\ge 15.0$ pp) are configurable engineering rules of thumb for this demonstration, **not** universal regulatory standards or formal statistical hypothesis tests.
+  5. *No Lending Authority or Fairness Claims:* Monitoring outputs are diagnostic signals for engineering observability only; they must never determine creditworthiness, trigger automated loan approvals or denials, price loans, or establish real-world demographic fairness.
+
 ## Illustrative Score Transformation & Risk Bands
 
 To provide an intuitive interface familiar to credit professionals, default probabilities are mapped to a traditional 300–850 scoring scale using the industry-standard Points to Double the Odds (PDO) formulation:
@@ -99,7 +112,7 @@ An interactive demonstration interface (`app.py`) provides graphical access to t
 ## Limitations
 - Simulated population, features, missingness and target generation.
 - Synthetic no-bureau-history group is not a validated representation of credit-invisible borrowers.
-- No external validation, real-world calibration, drift testing or credible financial-cost model.
+- No external validation, real-world population calibration, live production drift monitoring on authorized borrower data, or credible financial-cost model.
 - Feature importance and local feature contributions reflect predictive associations under the simulation rule, not causal impact.
 - No fairness conclusions should be drawn from the current simulation.
 - Thresholds and risk bands are not validated operational underwriting policies.

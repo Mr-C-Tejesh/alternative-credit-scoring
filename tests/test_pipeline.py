@@ -72,6 +72,7 @@ import inference_helper  # noqa: E402
 import experiments.alternative_feature_ablation as ablation_exp  # noqa: E402
 import uncertainty_analysis  # noqa: E402
 import stress_testing  # noqa: E402
+import monitoring  # noqa: E402
 
 
 
@@ -3385,6 +3386,415 @@ class TestStressTestingSensitivityAnalysis(unittest.TestCase):
         """CLI main entrypoint must execute cleanly and return exit code 0."""
         ret = stress_testing.main(["--seed", "2028"])
         self.assertEqual(ret, 0)
+
+
+# ---------------------------------------------------------------------------
+# 16. Batch Inference Monitoring & Data-Drift Diagnostics (Phase 09)
+# ---------------------------------------------------------------------------
+
+class TestBatchMonitoringDataDrift(unittest.TestCase):
+    """Automated test suite for Phase 09 batch monitoring and data-drift diagnostics."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Execute default batch monitoring once with fixed timestamp for inspection tests."""
+        cls.fixed_timestamp = "2026-01-01T00:00:00+00:00"
+        cls.feature_drift_df, cls.score_monitoring_df, cls.metadata, cls.report = (
+            monitoring.run_batch_monitoring(execution_timestamp=cls.fixed_timestamp)
+        )
+
+    def test_default_reference_incoming_split_reproducible_and_aligned(self):
+        """Default reference/incoming split must reproduce the exact seed-2026 stratified 80/20 split."""
+        train_df, test_df, ref_features, batch_features = (
+            monitoring.load_default_demonstration_data()
+        )
+        self.assertEqual(len(train_df), 8000)
+        self.assertEqual(len(test_df), 2000)
+        self.assertEqual(ref_features.shape, (8000, 14))
+        self.assertEqual(batch_features.shape, (2000, 14))
+        self.assertEqual(list(ref_features.columns), validation.ALL_FEATURES)
+        self.assertEqual(list(batch_features.columns), validation.ALL_FEATURES)
+
+        # Stratified target prevalence matches between train and test
+        self.assertAlmostEqual(
+            float(train_df[validation.TARGET].mean()),
+            float(test_df[validation.TARGET].mean()),
+            places=2,
+        )
+
+    def test_incoming_data_does_not_require_target_column(self):
+        """Incoming batch must not require the presence of a target column."""
+        _, test_df, _, _ = monitoring.load_default_demonstration_data()
+        no_target_df = test_df.drop(columns=[validation.TARGET]).copy()
+
+        src, feats = monitoring.load_and_validate_batch(no_target_df, batch_name="no_target_incoming")
+        self.assertNotIn(validation.TARGET, src.columns)
+        self.assertEqual(list(feats.columns), validation.ALL_FEATURES)
+        self.assertEqual(len(feats), len(no_target_df))
+
+    def test_target_and_identifiers_excluded_from_model_features(self):
+        """Target column and applicant identifiers must be strictly excluded from model feature frames."""
+        _, test_df, _, _ = monitoring.load_default_demonstration_data()
+        self.assertIn("synthetic_applicant_id", test_df.columns)
+        self.assertIn(validation.TARGET, test_df.columns)
+
+        _, feats = monitoring.load_and_validate_batch(test_df, batch_name="with_id_and_target")
+        self.assertNotIn("synthetic_applicant_id", feats.columns)
+        self.assertNotIn(validation.TARGET, feats.columns)
+        self.assertEqual(list(feats.columns), validation.ALL_FEATURES)
+
+    def test_invalid_schema_unsupported_missingness_non_numeric_and_out_of_range(self):
+        """Invalid schema, non-numeric values, out-of-range values, and prohibited missingness fail with ValidationError."""
+        _, test_df, _, _ = monitoring.load_default_demonstration_data()
+
+        # 1. Missing required feature column
+        bad_missing_col = test_df.drop(columns=["age_years"])
+        with self.assertRaises(validation.ValidationError):
+            monitoring.load_and_validate_batch(bad_missing_col, batch_name="missing_col")
+
+        # 2. Non-numeric / string value in predictor
+        bad_str_col = test_df.copy()
+        bad_str_col["monthly_income_inr"] = "fifty_thousand"
+        with self.assertRaises(validation.ValidationError):
+            monitoring.load_and_validate_batch(bad_str_col, batch_name="bad_str")
+
+        # 3. Infinite value in predictor
+        bad_inf_col = test_df.copy()
+        bad_inf_col.iloc[0, bad_inf_col.columns.get_loc("debt_to_income_ratio")] = np.inf
+        with self.assertRaises(validation.ValidationError):
+            monitoring.load_and_validate_batch(bad_inf_col, batch_name="bad_inf")
+
+        # 4. Traditional feature with prohibited missingness
+        bad_trad_nan = test_df.copy()
+        bad_trad_nan.iloc[0, bad_trad_nan.columns.get_loc("age_years")] = np.nan
+        with self.assertRaises(validation.ValidationError):
+            monitoring.load_and_validate_batch(bad_trad_nan, batch_name="bad_trad_nan")
+
+        # 5. Out-of-bounds domain value
+        bad_domain = test_df.copy()
+        bad_domain.iloc[0, bad_domain.columns.get_loc("age_years")] = 120
+        with self.assertRaises(validation.ValidationError):
+            monitoring.load_and_validate_batch(bad_domain, batch_name="bad_domain")
+
+        # 6. Inconsistent bureau combination (score present when available == 0)
+        bad_bureau = test_df.copy()
+        bad_bureau.iloc[0, bad_bureau.columns.get_loc("bureau_history_available")] = 0
+        bad_bureau.iloc[0, bad_bureau.columns.get_loc("bureau_score")] = 720.0
+        with self.assertRaises(validation.ValidationError):
+            monitoring.load_and_validate_batch(bad_bureau, batch_name="bad_bureau")
+
+    def test_valid_missing_values_permitted_and_follow_rules(self):
+        """Permitted missing values in alternative features and bureau score must validate cleanly."""
+        _, test_df, _, _ = monitoring.load_default_demonstration_data()
+        valid_nans = test_df.copy()
+
+        # Set alternative features to NaN
+        for col in validation.ALTERNATIVE_FEATURES:
+            valid_nans[col] = np.nan
+
+        # Set bureau_score NaN consistently with bureau_history_available == 0
+        valid_nans["bureau_history_available"] = 0
+        valid_nans["bureau_score"] = np.nan
+
+        src, feats = monitoring.load_and_validate_batch(valid_nans, batch_name="valid_nans")
+        self.assertEqual(len(feats), len(valid_nans))
+        self.assertTrue(feats[validation.ALTERNATIVE_FEATURES].isna().all().all())
+        self.assertTrue(feats["bureau_score"].isna().all())
+
+    def test_source_dataframes_not_mutated(self):
+        """Source DataFrames must not be modified in place during batch validation or feature extraction."""
+        _, test_df, _, _ = monitoring.load_default_demonstration_data()
+        original_copy = test_df.copy(deep=True)
+
+        _, _ = monitoring.load_and_validate_batch(test_df, batch_name="immutability_test")
+        pd.testing.assert_frame_equal(test_df, original_copy)
+
+    def test_reference_derived_bin_edges_reused_for_incoming_batches(self):
+        """Bin edges derived from reference distribution must be reused across incoming batches."""
+        ref_vals = np.array([10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0, 100.0])
+        batch_vals = np.array([15.0, 25.0, 35.0, 45.0])
+
+        edges = monitoring.compute_reference_bin_edges(ref_vals, n_bins=5)
+        self.assertEqual(edges[0], -np.inf)
+        self.assertEqual(edges[-1], np.inf)
+
+        psi = monitoring.calculate_psi(ref_vals, batch_vals, bin_edges=edges)
+        self.assertTrue(np.isfinite(psi))
+        self.assertGreaterEqual(psi, 0.0)
+
+    def test_psi_finite_deterministic_and_zero_for_identical_inputs(self):
+        """PSI must be exactly 0.0 for identical distributions, finite, and deterministic."""
+        sample_a = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] * 10)
+        sample_b = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0] * 5)
+
+        edges = monitoring.compute_reference_bin_edges(sample_a, n_bins=5)
+        psi_identical = monitoring.calculate_psi(sample_a, sample_b, bin_edges=edges)
+        self.assertEqual(psi_identical, 0.0)
+
+        # Deterministic
+        psi_repeat = monitoring.calculate_psi(sample_a, sample_b, bin_edges=edges)
+        self.assertEqual(psi_identical, psi_repeat)
+
+    def test_psi_handles_constant_features_repeated_quantiles_zero_frequency(self):
+        """PSI calculation must safely handle constant features, repeated quantiles, and zero bin frequencies."""
+        # Constant feature
+        const_ref = np.array([5.0] * 50)
+        const_batch_same = np.array([5.0] * 20)
+        const_batch_shifted = np.array([6.0] * 20)
+
+        edges_const = monitoring.compute_reference_bin_edges(const_ref, n_bins=10)
+        self.assertEqual(len(edges_const), 4)  # [-inf, 5 - delta, 5 + delta, inf]
+
+        psi_const_same = monitoring.calculate_psi(const_ref, const_batch_same, edges_const)
+        self.assertEqual(psi_const_same, 0.0)
+
+        psi_const_shifted = monitoring.calculate_psi(const_ref, const_batch_shifted, edges_const)
+        self.assertTrue(np.isfinite(psi_const_shifted))
+        self.assertGreater(psi_const_shifted, 1.0)
+
+        # Repeated quantiles (e.g. integer counts with many zeros)
+        repeated_vals = np.array([0, 0, 0, 0, 0, 0, 1, 2, 3, 4] * 10)
+        edges_repeated = monitoring.compute_reference_bin_edges(repeated_vals, n_bins=10)
+        self.assertTrue(np.all(np.diff(edges_repeated) > 0))
+
+        # Zero frequency in some bins (smoothing prevents division by zero)
+        batch_with_zeros = np.array([4] * 20)
+        psi_zeros = monitoring.calculate_psi(repeated_vals, batch_with_zeros, edges_repeated)
+        self.assertTrue(np.isfinite(psi_zeros))
+
+    def test_missingness_changes_calculated_independently_and_accurately(self):
+        """Missingness change must be calculated independently of non-missing PSI in percentage points."""
+        ref_s = pd.Series([1.0, 2.0, 3.0, np.nan, 5.0])  # 20% missing
+        batch_s = pd.Series([1.0, np.nan, np.nan, np.nan, 5.0])  # 60% missing
+
+        ref_miss = ref_s.isna().mean()
+        batch_miss = batch_s.isna().mean()
+        change_pp = (batch_miss - ref_miss) * 100.0
+        self.assertAlmostEqual(change_pp, 40.0, places=4)
+
+        # Status derives independently
+        cfg = monitoring.MonitoringConfig()
+        status, reason = monitoring.derive_feature_status(
+            missingness_ref=float(ref_miss),
+            missingness_batch=float(batch_miss),
+            psi=0.01,  # PSI is small
+            config=cfg,
+        )
+        self.assertEqual(status, "CRITICAL")
+        self.assertIn("Missingness change", reason)
+
+    def test_ks_statistic_adequate_small_degenerate_samples(self):
+        """Two-sample KS statistic must correctly handle adequate, small, and empty samples."""
+        ref_vals = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0])
+        batch_vals = np.array([2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0])
+
+        stat, pval, note = monitoring.calculate_ks_statistic(ref_vals, batch_vals, min_sample_size=5)
+        self.assertTrue(np.isfinite(stat))
+        self.assertTrue(0.0 <= stat <= 1.0)
+        self.assertTrue(0.0 <= pval <= 1.0)
+        self.assertEqual(note, "Adequate sample size")
+
+        # Small sample
+        small_batch = np.array([1.0, 2.0])
+        s_stat, s_pval, s_note = monitoring.calculate_ks_statistic(ref_vals, small_batch, min_sample_size=5)
+        self.assertTrue(np.isnan(s_stat))
+        self.assertTrue(np.isnan(s_pval))
+        self.assertIn("below minimum threshold", s_note)
+
+        # Empty sample
+        empty_batch = np.array([])
+        e_stat, e_pval, e_note = monitoring.calculate_ks_statistic(ref_vals, empty_batch, min_sample_size=5)
+        self.assertTrue(np.isnan(e_stat))
+        self.assertTrue(np.isnan(e_pval))
+
+    def test_no_drift_inputs_produce_near_zero_shifts(self):
+        """Evaluating identical reference inputs must produce exactly zero feature and score shifts."""
+        _, _, ref_features, _ = monitoring.load_default_demonstration_data()
+        cfg = monitoring.MonitoringConfig()
+
+        f_df, _ = monitoring.compute_feature_drift(ref_features, ref_features, cfg)
+        self.assertTrue((f_df["psi"] == 0.0).all())
+        self.assertTrue((f_df["missingness_change_pp"] == 0.0).all())
+        self.assertTrue((f_df["status"] == "OK").all())
+
+        models = monitoring.load_fitted_models()
+        s_df, _ = monitoring.compute_score_monitoring(ref_features, ref_features, models, cfg)
+        self.assertTrue((s_df["score_psi"] == 0.0).all())
+        self.assertTrue((s_df["mean_score_change"] == 0.0).all())
+        self.assertTrue((s_df["score_status"] == "OK").all())
+
+    def test_deterministic_synthetic_shift_produces_measurable_change(self):
+        """A deterministic synthetic shift in an incoming feature must produce measurable PSI and alert status."""
+        _, _, ref_features, _ = monitoring.load_default_demonstration_data()
+        shifted_batch = ref_features.copy()
+
+        # Shift age_years by +15 years
+        shifted_batch["age_years"] = np.clip(shifted_batch["age_years"] + 15, 20, 65)
+
+        cfg = monitoring.MonitoringConfig()
+        f_df, _ = monitoring.compute_feature_drift(ref_features, shifted_batch, cfg)
+
+        age_row = f_df[f_df["feature"] == "age_years"].iloc[0]
+        self.assertGreater(age_row["psi"], 0.10)
+        self.assertIn(age_row["status"], ["WARNING", "CRITICAL"])
+
+    def test_model_features_alignment_and_order(self):
+        """Each fitted model must receive its exact required feature set and column order."""
+        self.assertEqual(
+            monitoring.MODEL_FEATURES["Traditional baseline"],
+            validation.TRADITIONAL_FEATURES,
+        )
+        self.assertEqual(
+            monitoring.MODEL_FEATURES["Hybrid (traditional + alternative)"],
+            validation.ALL_FEATURES,
+        )
+        self.assertEqual(
+            monitoring.MODEL_FEATURES["Hybrid (HistGradientBoosting)"],
+            validation.ALL_FEATURES,
+        )
+
+    def test_model_predictions_must_be_finite_and_in_unit_interval(self):
+        """validate_and_extract_probabilities must enforce shape (N, 2), numeric type, finiteness, and [0, 1] range."""
+        valid_X = pd.DataFrame({"a": [1, 2]})
+
+        # Valid model mock
+        mock_valid = MagicMock()
+        mock_valid.predict_proba.return_value = np.array([[0.3, 0.7], [0.4, 0.6]])
+        probs = monitoring.validate_and_extract_probabilities(mock_valid, valid_X, "test_model", "test_batch")
+        self.assertEqual(len(probs), 2)
+        np.testing.assert_allclose(probs, [0.7, 0.6])
+
+        # Reject shape mismatch
+        mock_1d = MagicMock()
+        mock_1d.predict_proba.return_value = np.array([0.7, 0.6])
+        with self.assertRaises(ValueError):
+            monitoring.validate_and_extract_probabilities(mock_1d, valid_X, "test_model", "test_batch")
+
+        # Reject out of bounds
+        mock_oob = MagicMock()
+        mock_oob.predict_proba.return_value = np.array([[1.2, -0.2], [0.4, 0.6]])
+        with self.assertRaises(ValueError):
+            monitoring.validate_and_extract_probabilities(mock_oob, valid_X, "test_model", "test_batch")
+
+        # Reject non-finite (NaN)
+        mock_nan = MagicMock()
+        mock_nan.predict_proba.return_value = np.array([[np.nan, np.nan], [0.4, 0.6]])
+        with self.assertRaises(ValueError):
+            monitoring.validate_and_extract_probabilities(mock_nan, valid_X, "test_model", "test_batch")
+
+        # Reject unnormalized sum
+        mock_unnorm = MagicMock()
+        mock_unnorm.predict_proba.return_value = np.array([[0.5, 0.8], [0.4, 0.6]])
+        with self.assertRaises(ValueError):
+            monitoring.validate_and_extract_probabilities(mock_unnorm, valid_X, "test_model", "test_batch")
+
+    def test_score_summary_coverage_and_finiteness(self):
+        """Score monitoring summary must contain all 3 models with finite monotonically ordered percentiles."""
+        self.assertEqual(len(self.score_monitoring_df), 3)
+        expected_models = {
+            "Traditional baseline",
+            "Hybrid (traditional + alternative)",
+            "Hybrid (HistGradientBoosting)",
+        }
+        self.assertEqual(set(self.score_monitoring_df["model"]), expected_models)
+
+        for _, r in self.score_monitoring_df.iterrows():
+            self.assertTrue(
+                r["reference_score_min"]
+                <= r["reference_score_p05"]
+                <= r["reference_score_p25"]
+                <= r["reference_score_p50"]
+                <= r["reference_score_p75"]
+                <= r["reference_score_p95"]
+                <= r["reference_score_max"]
+            )
+            self.assertTrue(
+                r["incoming_score_min"]
+                <= r["incoming_score_p05"]
+                <= r["incoming_score_p25"]
+                <= r["incoming_score_p50"]
+                <= r["incoming_score_p75"]
+                <= r["incoming_score_p95"]
+                <= r["incoming_score_max"]
+            )
+            self.assertTrue(np.isfinite(r["score_psi"]))
+            self.assertEqual(r["score_status"], "OK")
+
+    def test_configurable_warning_thresholds_change_status(self):
+        """Configurable warning thresholds must dynamically alter diagnostic statuses."""
+        strict_config = monitoring.MonitoringConfig(
+            psi_warning_threshold=0.001,  # extremely strict threshold
+            missingness_warning_threshold_pp=0.01,
+        )
+        _, _, ref_features, batch_features = monitoring.load_default_demonstration_data()
+        f_df, _ = monitoring.compute_feature_drift(ref_features, batch_features, strict_config)
+
+        # Under ultra-strict threshold, features with PSI > 0.001 must trigger WARNING
+        warned = f_df[f_df["status"] == "WARNING"]
+        self.assertGreater(len(warned), 0)
+
+    def test_generated_report_and_metadata_disclose_limitations(self):
+        """Generated report and metadata must prominently disclose synthetic data limitations."""
+        self.assertIn("SYNTHETIC AND EDUCATIONAL PURPOSE ONLY", self.report)
+        self.assertIn("Statistical drift is not equivalent to performance degradation", self.report)
+        self.assertIn("Without ground-truth outcome labels on incoming batches", self.report)
+        self.assertIn("No automated credit policy", self.report)
+
+        self.assertIn("monitoring_limitations", self.metadata)
+        self.assertGreaterEqual(len(self.metadata["monitoring_limitations"]), 5)
+
+    def test_repeated_execution_reproducibility(self):
+        """Repeated monitoring executions must produce identical CSVs, report, and metadata excluding timestamp."""
+        f_a, s_a, meta_a, rep_a = monitoring.run_batch_monitoring()
+        f_b, s_b, meta_b, rep_b = monitoring.run_batch_monitoring()
+
+        pd.testing.assert_frame_equal(f_a, f_b)
+        pd.testing.assert_frame_equal(s_a, s_b)
+        self.assertEqual(rep_a, rep_b)
+
+        meta_a_no_ts = {k: v for k, v in meta_a.items() if k != "generated_at_utc"}
+        meta_b_no_ts = {k: v for k, v in meta_b.items() if k != "generated_at_utc"}
+        self.assertEqual(meta_a_no_ts, meta_b_no_ts)
+
+    def test_cli_smoke_and_missing_files_error(self):
+        """CLI entrypoint must succeed for default run and fail clearly for non-existent files."""
+        # Clean default execution
+        ret = monitoring.main(["--execution-timestamp", "2026-01-01T00:00:00+00:00"])
+        self.assertEqual(ret, 0)
+
+        # Non-existent reference file
+        ret_bad = monitoring.main(["--reference-path", "non_existent.csv", "--batch-path", "batch.csv"])
+        self.assertEqual(ret_bad, 1)
+
+    def test_monitoring_config_validation_rules(self):
+        """MonitoringConfig validation must reject invalid parameters."""
+        val = monitoring.validate_monitoring_config
+
+        # Inverted PSI thresholds (warning > critical)
+        with self.assertRaises(ValueError):
+            val(monitoring.MonitoringConfig(psi_warning_threshold=0.30, psi_critical_threshold=0.20))
+
+        # Negative PSI threshold
+        with self.assertRaises(ValueError):
+            val(monitoring.MonitoringConfig(psi_warning_threshold=-0.1))
+
+        # Inverted missingness thresholds
+        with self.assertRaises(ValueError):
+            val(monitoring.MonitoringConfig(
+                missingness_warning_threshold_pp=20.0, missingness_critical_threshold_pp=10.0
+            ))
+
+        # Invalid n_bins
+        with self.assertRaises(ValueError):
+            val(monitoring.MonitoringConfig(n_bins=1))
+        with self.assertRaises(ValueError):
+            val(monitoring.MonitoringConfig(n_bins=True))  # type: ignore
+
+        # Invalid smoothing_epsilon
+        with self.assertRaises(ValueError):
+            val(monitoring.MonitoringConfig(smoothing_epsilon=0.0))
+        with self.assertRaises(ValueError):
+            val(monitoring.MonitoringConfig(smoothing_epsilon=-1e-4))
 
 
 if __name__ == "__main__":

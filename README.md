@@ -64,7 +64,7 @@ pip install -r requirements.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 196 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, and controlled input stress testing:
+The test suite contains 217 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, and batch drift monitoring:
 
 ```bash
 python -m unittest discover -s tests -v
@@ -137,6 +137,20 @@ python stress_testing.py --seed 2028
 ```
 
 Deliverables are generated into `reports/stress_testing/`.
+
+### I. (Optional) Run Batch Inference Monitoring & Data-Drift Diagnostics
+
+To evaluate feature distribution drift (PSI, KS test), missingness changes, and model predicted-probability shifts against reference data:
+
+```bash
+# Default demonstration: evaluates held-out test partition against reference training partition
+python monitoring.py
+
+# Custom caller batches:
+python monitoring.py --reference-path path/to/reference.csv --batch-path path/to/incoming_batch.csv
+```
+
+Deliverables are generated into `reports/monitoring/`.
 
 ---
 
@@ -248,7 +262,47 @@ To investigate how sensitive the fitted models are to degradation in alternative
 
 ---
 
-## 7. Feature Groups & Supported Domain Bounds
+## 7. Batch Inference Monitoring & Data-Drift Diagnostics
+
+To assess feature and score distribution stability on incoming prediction cohorts without requiring production labels, a dedicated monitoring module is implemented in `monitoring.py`:
+
+- **Operational Objectives:**
+  1. *Feature Distribution Drift:* Detect statistical divergence between an incoming batch and a reference dataset across all 14 features using Population Stability Index (PSI) and two-sample Kolmogorov–Smirnov (KS) tests.
+  2. *Missingness Tracking:* Independently evaluate feature missingness rate changes in percentage points ($\Delta\text{Miss} = (\text{rate}_{\text{batch}} - \text{rate}_{\text{ref}}) \times 100$).
+  3. *Model Score Shift Monitoring:* Quantify output probability distribution shifts across all three fitted models (`Traditional baseline`, `Hybrid LR`, `Hybrid HistGradientBoosting`) using score decile PSI, mean predicted risk change, and absolute score drift.
+  4. *Observability Guardrails:* Separate input schema validation failures from diagnostic warnings, ensuring malformed batches are rejected safely before scoring while valid drifted batches are analyzed without silent alteration.
+- **Protocol & Input Contracts:**
+  - Evaluates predictor matrices containing `ALL_FEATURES`. Target labels (`default_within_12_months`) and applicant identifiers (`synthetic_applicant_id`) are strictly excluded from model feature sets.
+  - Incoming batches do **not** require target labels.
+  - Source DataFrames are preserved without in-place mutation or row reordering.
+  - Pre-scoring validation strictly enforces data types, absence of infinities, permissible missingness, and `DOMAIN_BOUNDS` from `validation.py`.
+- **Drift Diagnostics & Mathematical Methodology:**
+  - *Reference-Derived Quantile Deciles:* Bin edges are derived exclusively from non-missing reference values using quantile cutpoints with infinite outer tails ($(-\infty, \infty)$), guaranteeing complete coverage of incoming observations.
+  - *Numerical Stability & Zero Frequencies:* Binned proportions incorporate Laplace pseudo-count smoothing ($\epsilon = 10^{-4}$):
+    $$P_i^{\text{smooth}} = \frac{P_i + \epsilon}{1 + K\epsilon}, \quad Q_i^{\text{smooth}} = \frac{Q_i + \epsilon}{1 + K\epsilon}, \quad \text{PSI} = \sum_{i=1}^K (Q_i^{\text{smooth}} - P_i^{\text{smooth}}) \ln\left(\frac{Q_i^{\text{smooth}}}{P_i^{\text{smooth}}}\right)$$
+    Smooth proportions ensure finite, non-infinite PSI values, and evaluate to exactly $0.0$ when reference and batch distributions are identical.
+  - *Constant-Valued Features & Repeated Quantiles:* Constant features are partitioned into a dedicated three-bin delta neighborhood around the constant; repeated quantiles collapse cleanly into unique cutpoints.
+- **Operational Thresholds & Diagnostic Statuses:**
+  - *PSI Thresholds:* Warning $\ge 0.10$, Critical $\ge 0.25$.
+  - *Missingness Thresholds:* Warning $\ge 5.0$ percentage points, Critical $\ge 15.0$ percentage points.
+  - *Threshold Disclaimer:* Thresholds are operational rules of thumb for this engineering demonstration, **not** universal regulatory mandates or formal statistical hypothesis tests.
+- **Key Empirical Observations (Default Demonstration):**
+  - In the default demonstration (evaluating the 2,000-row held-out test split against the 8,000-row reference training split), all 14 features and all 3 model score distributions exhibit near-zero drift (all feature PSIs $< 0.010$, all score PSIs $< 0.008$), confirming that the independent, identically distributed stratified partition produces stable diagnostic baselines.
+  - Missingness rates match within $\pm 1.6$ percentage points across all alternative features.
+  - All operational diagnostic statuses are `OK`.
+- **Methodological Limitations & Governance Warning:**
+  - *Statistical drift is not performance degradation:* A distribution shift does not prove that model accuracy worsened; in unlabeled production, true discrimination (ROC-AUC) and calibration cannot be evaluated without outcome labels.
+  - *Absence of drift does not guarantee safety:* Low PSI values confirm stability relative to reference deciles, but do not protect against unmonitored covariates, non-stationary default mechanisms, or adversarial inputs.
+  - *No automated decision policy:* Drift warnings must never trigger automated loan denials, pricing changes, or unverified model retraining.
+- **Deliverables (`reports/monitoring/`):**
+  - `feature_drift.csv`: 14 rows recording feature group, reference/incoming missingness, missingness change pp, non-missing PSI, KS statistic, KS p-value, and operational status.
+  - `score_monitoring.csv`: 3 rows recording score mean, std, percentiles (min, p05, p25, p50, p75, p95, max), mean score change, absolute change, score PSI, and status across all three models.
+  - `monitoring_metadata.json`: Machine-readable metadata with dataset paths, row counts, binning configuration, threshold settings, and dependency versions (identical across repeated runs except for `generated_at_utc`).
+  - `monitoring_report.md`: Formatted markdown audit report with executive summary, input validation findings, drift tables, score shifts, and prioritized warnings.
+
+---
+
+## 8. Feature Groups & Supported Domain Bounds
 
 The operational boundaries below reflect the synthetic generator distribution and the input validation contract in `validation.py`. They are **model support bounds for this synthetic benchmark**, not universal borrower limits or statutory lending rules:
 
@@ -271,7 +325,7 @@ The operational boundaries below reflect the synthetic generator distribution an
 
 ---
 
-## 8. Model Outputs & Mathematical Methodology
+## 9. Model Outputs & Mathematical Methodology
 
 ### A. Estimated Default Probability ($p$)
 The hybrid Logistic Regression model outputs an estimated probability of default within 12 months ($p \in [0, 1]$). Because this model was trained on simulated data, $p$ reflects synthetic patterns, not true borrower risk.
@@ -299,7 +353,7 @@ $$\text{logit}(p) = \text{intercept} + \sum_{j=1}^M (\text{coef}_j \cdot x'_j)$$
 
 ---
 
-## 9. Repository Architecture
+## 10. Repository Architecture
 
 ```
 alternative-credit-scoring/
@@ -317,6 +371,7 @@ alternative-credit-scoring/
 │   └── traditional_baseline.joblib
 ├── reports/
 │   ├── ablation_robustness/     # Multi-seed ablation metrics, deltas, plot, and report
+│   ├── monitoring/              # Batch feature drift, score monitoring, metadata, and audit report
 │   ├── stress_testing/          # Controlled input-degradation stress test metrics, deltas, metadata, and report
 │   ├── uncertainty/             # Bootstrap model & paired comparison intervals, report, metadata
 │   ├── calibration_curves.png
@@ -327,8 +382,9 @@ alternative-credit-scoring/
 │   ├── threshold_analysis.csv
 │   └── experiment_summary.md    # Detailed methodology and audit report
 ├── tests/
-│   └── test_pipeline.py         # 196 comprehensive automated unit and AppTest tests
+│   └── test_pipeline.py         # 217 comprehensive automated unit and AppTest tests
 ├── app.py                       # Streamlit web demonstration
+├── monitoring.py                # Batch inference monitoring & data-drift diagnostics
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── stress_testing.py            # Controlled input-degradation stress testing & sensitivity analysis
 ├── train.py                     # Synthetic data generation and model training pipeline
@@ -345,7 +401,7 @@ alternative-credit-scoring/
 
 ---
 
-## 10. Limitations & Governance Notice
+## 11. Limitations & Governance Notice
 
 1. **Simulation Benchmark Only:** Features and target outcomes are artificially constructed by mathematical formulas.
 2. **No Real Lending Authority:** Outputs must not be used to approve, reject, price, or rank real applicants.
