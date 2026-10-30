@@ -13,6 +13,7 @@ Phase 10 implementation:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,6 +22,7 @@ from typing import Any, Callable
 import numpy as np
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from prometheus_client import (
@@ -428,6 +430,25 @@ def create_app(
         ),
         version="1.0.0",
         lifespan=lifespan,
+    )
+
+    # The React frontend may be deployed separately (for example, on Vercel).
+    # Set CORS_ALLOWED_ORIGINS to a comma-separated allow-list in deployment.
+    # Local development origins remain available by default.
+    allowed_origins = [
+        origin.strip()
+        for origin in os.getenv(
+            "CORS_ALLOWED_ORIGINS",
+            "http://localhost:5173,http://127.0.0.1:5173",
+        ).split(",")
+        if origin.strip()
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type"],
     )
 
     # State initialization
