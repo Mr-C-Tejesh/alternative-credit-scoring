@@ -42,7 +42,7 @@ The experiment evaluated **3 serialized models** on **2,000 held-out synthetic t
 ## Methodology & Experimental Design
 
 ### Evaluation Protocol
-- **Dataset**: `data/synthetic_applicants.csv` (10,000 rows).
+- **Dataset**: `data\synthetic_applicants.csv` (10,000 rows).
 - **Held-Out Test Split**: Fraction = `0.20`, Split Seed = `2026` (stratified on `default_within_12_months`).
 - **Test Cohort**: 2,000 rows (550 defaults, 1,450 non-defaults).
 - **Models Evaluated**:

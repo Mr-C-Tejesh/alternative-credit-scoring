@@ -1,8 +1,8 @@
 # Batch Inference Monitoring & Data-Drift Diagnostic Report
 
 **Execution Mode**: `default_demonstration`  
-**Reference Dataset**: `data/synthetic_applicants.csv (training partition: 80%)` (8,000 rows)  
-**Incoming Batch**: `data/synthetic_applicants.csv (held-out test partition: 20%)` (2,000 rows)  
+**Reference Dataset**: `data\synthetic_applicants.csv (training partition: 80%)` (8,000 rows)  
+**Incoming Batch**: `data\synthetic_applicants.csv (held-out test partition: 20%)` (2,000 rows)  
 **Binning Methodology**: Reference-derived quantiles with infinite tails (10 bins, smoothing $\epsilon = 0.0001$)  
 **Configured Thresholds**: PSI Warning $\ge 0.10$, PSI Critical $\ge 0.25$, Missingness Warning $\ge 5.0$ pp, Missingness Critical $\ge 15.0$ pp  
 

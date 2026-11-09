@@ -1,10 +1,10 @@
 {
-  "generated_at_utc": "2026-10-24T05:49:44.122107+00:00",
+  "generated_at_utc": "2026-11-09T10:33:30.325215+00:00",
   "phase": "Phase 09 \u2014 Batch Inference Monitoring & Data-Drift Diagnostics",
   "execution_mode": "default_demonstration",
   "dataset_settings": {
-    "reference_path": "data/synthetic_applicants.csv (training partition: 80%)",
-    "batch_path": "data/synthetic_applicants.csv (held-out test partition: 20%)",
+    "reference_path": "data\\synthetic_applicants.csv (training partition: 80%)",
+    "batch_path": "data\\synthetic_applicants.csv (held-out test partition: 20%)",
     "reference_rows": 8000,
     "incoming_rows": 2000,
     "split_settings": {
@@ -74,9 +74,9 @@
     "Monitoring outputs must never be used to make lending decisions, price credit, approve/reject applicants, or evaluate real-world fairness."
   ],
   "environment": {
-    "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "python_version": "3.14.6 (tags/v3.14.6:c63aec6, Jun 10 2026, 10:26:10) [MSC v.1944 64 bit (AMD64)]",
     "numpy_version": "2.5.4",
-    "pandas_version": "3.0.6",
+    "pandas_version": "3.1.0",
     "scikit_learn_version": "1.7.2",
     "matplotlib_version": "3.11.2"
   }
