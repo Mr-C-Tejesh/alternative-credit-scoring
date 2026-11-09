@@ -22,7 +22,7 @@ The implementation includes:
 - **Out-of-Fold Threshold Analysis:** Empirical classification sensitivity ($\tau \in [0.05, 0.95]$) evaluated strictly on 5-fold cross-validated out-of-fold predictions on the **training partition** (8,000 samples) to prevent data snooping leakage.
 - **Illustrative PDO Credit Score Transformation:** Converts predicted default probabilities into an intuitive $300\text{--}850$ credit score using Points to Double the Odds (PDO) methodology.
 - **Exact Local Additive Explanations:** Decomposes hybrid Logistic Regression predictions into exact feature contributions in log-odds space ($\Delta \text{logit}$).
-- **Interactive Streamlit Demo & CLI:** End-to-end inference interfaces with runtime input contract enforcement and missingness simulation for thin-file / unbanked borrowers.
+- **Interactive React Demo & CLI:** End-to-end inference interfaces with runtime input contract enforcement and missingness simulation for thin-file / unbanked borrowers.
 
 ---
 
@@ -35,7 +35,7 @@ The implementation includes:
   - `scikit-learn>=1.4,<1.8` *(trained on 1.7.x; includes a defensive deserialization shim in `inference_helper.load_saved_model()`)*
   - `matplotlib>=3.8`
   - `joblib>=1.3`
-  - `streamlit>=1.35`
+  - React + Vite frontend dependencies are managed separately in `frontend/package.json`.
 - **Continuous Integration Status:** Automated testing is configured in `.github/workflows/tests.yml` for pushes and pull requests to `main` on Python `3.12` (`ubuntu-latest`). Remote execution for the verified base commit (`c090464`) was confirmed passing (`success`).
 
 ---
@@ -60,7 +60,7 @@ source .venv/bin/activate
 # Upgrade pip
 python -m pip install --upgrade pip
 
-# Option 1: Full development, analysis, Streamlit app, and test suite
+# Option 1: Full development, analysis, API, and test suite
 pip install -r requirements.txt
 
 # Option 2: Lean API runtime microservice only (minimal container footprint)
@@ -69,26 +69,30 @@ pip install -r requirements-runtime.txt
 
 ### B. Run Automated Unit Tests
 
-The test suite contains 264 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, Streamlit `AppTest` execution, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, HTTP inference API contracts, privacy-safe Prometheus runtime observability, artifact SHA-256 integrity verification, and final ML pipeline acceptance:
+The test suite contains 264 unit and integration tests covering data validation, metric invariants, threshold sensitivity, PDO scoring, additive explainability, CLI smoke tests, React frontend and inference-helper integration, feature ablation experiment utilities, bootstrap uncertainty analysis, controlled input stress testing, batch drift monitoring, HTTP inference API contracts, privacy-safe Prometheus runtime observability, artifact SHA-256 integrity verification, and final ML pipeline acceptance:
 
 ```bash
 python -m unittest discover -s tests -v
 ```
 
 
-### C. Run the Interactive Streamlit Web App
+### C. Run the React Web App
 
-Launch the local interactive application:
+First start the FastAPI backend as described in Section 8. Then open a second terminal and run:
 
 ```bash
-streamlit run app.py
+cd frontend
+npm install
+npm run dev
 ```
 
-The web interface enables:
+Vite displays the local frontend URL (normally `http://localhost:5173`). The frontend calls the API at `http://127.0.0.1:8000` by default. To use another API address, set `VITE_API_BASE_URL` in `frontend/.env.local`. Configure the backend's `CORS_ALLOWED_ORIGINS` to include the frontend origin.
+
+The React interface enables:
 - Adjusting applicant inputs within validated synthetic domain bounds.
-- Toggling formal bureau record availability (`bureau_score = NaN`).
-- Simulating unbanked or cold-start scenarios via multiselect controls for unavailable alternative data.
-- Viewing estimated 12-month default probability, illustrative credit score, risk band, and top risk-increasing/decreasing factors with full decomposition tables.
+- Toggling formal bureau record availability (`bureau_score = null`).
+- Simulating unbanked or cold-start scenarios by marking alternative data sources unavailable.
+- Viewing estimated 12-month default probability, illustrative credit score, risk band, and top risk-increasing/decreasing factors.
 
 ### D. Run the CLI Prediction Demonstration
 
@@ -506,7 +510,7 @@ Phase 12 optimizes the containerized serving footprint and establishes model art
 
 #### 1. Lean Runtime Dependency Surface
 - **Separation of Concerns:** The API serving container installs strictly from `requirements-runtime.txt` rather than the complete workspace stack (`requirements.txt`).
-- **Surface Reduction:** Heavy development and visualization packages—specifically `streamlit` (and its transitive tree: Altair, PyDeck, PyArrow, Pillow, Tornado) and `matplotlib` (and its rendering stack)—are excluded from the container image.
+- **Surface Reduction:** Frontend packages (React, Vite, and their Node.js dependencies) are installed separately and are not included in the API container. `matplotlib` and its rendering stack are also excluded from the container image.
 - **Dependency Consistency:** Every build runs `pip check` inside the Docker image to ensure zero broken dependencies or unmet transitive requirements.
 
 #### 2. Model Artifact Integrity Verification (`models/model_manifest.json`)
@@ -646,7 +650,14 @@ alternative-credit-scoring/
 ├── .dockerignore                # Container build context exclusions
 ├── Dockerfile                   # Reproducible non-root container build (python:3.12-slim)
 ├── api.py                       # FastAPI HTTP inference service (/health, /ready, /v1/predict, /metrics)
-├── app.py                       # Streamlit web demonstration
+├── frontend/                    # React + Vite web application
+│   ├── src/
+│   │   ├── App.jsx
+│   │   ├── main.jsx
+│   │   └── styles.css
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js
 ├── monitoring.py                # Batch inference monitoring & data-drift diagnostics
 ├── predict.py                   # Command-line prediction and explanation demo
 ├── stress_testing.py            # Controlled input-degradation stress testing & sensitivity analysis
