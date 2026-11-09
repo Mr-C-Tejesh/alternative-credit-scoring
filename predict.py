@@ -87,7 +87,7 @@ def main() -> None:
     print(f"Illustrative Risk Band:                {risk_band}")
     print()
     print("Scoring Model Assumptions:")
-    print(f"  • Base score: {int(DEFAULT_BASE_SCORE)} at {int(DEFAULT_BASE_ODDS)}:1 good-to-bad odds (p ≈ {1.0 / (DEFAULT_BASE_ODDS + 1.0):.2%})")
+    print(f"  • Base score: {int(DEFAULT_BASE_SCORE)} at {int(DEFAULT_BASE_ODDS)}:1 good-to-bad odds (p ~ {1.0 / (DEFAULT_BASE_ODDS + 1.0):.2%})")
     print(f"  • Points to Double the Odds (PDO): {int(DEFAULT_PDO)}")
     print(f"  • Raw score: {score_res.raw_score:.1f} (clamped to [{DEFAULT_MIN_SCORE}, {DEFAULT_MAX_SCORE}])")
     print("  • Note: Educational transformation only; NOT an official credit bureau score.")

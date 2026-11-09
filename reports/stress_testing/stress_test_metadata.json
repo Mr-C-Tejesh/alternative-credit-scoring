@@ -1,7 +1,7 @@
 {
-  "generated_at_utc": "2026-10-24T04:50:30.137079+00:00",
+  "generated_at_utc": "2026-11-09T10:33:54.276212+00:00",
   "dataset_settings": {
-    "data_path": "data/synthetic_applicants.csv",
+    "data_path": "data\\synthetic_applicants.csv",
     "n_total_records": 10000,
     "test_fraction": 0.2,
     "split_seed": 2026,
@@ -98,9 +98,9 @@
     }
   },
   "environment_versions": {
-    "python_version": "3.13.7 (v3.13.7:bcee1c32211, Aug 14 2025, 19:10:51) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "python_version": "3.14.6 (tags/v3.14.6:c63aec6, Jun 10 2026, 10:26:10) [MSC v.1944 64 bit (AMD64)]",
     "numpy_version": "2.5.4",
-    "pandas_version": "3.0.6",
+    "pandas_version": "3.1.0",
     "scikit_learn_version": "1.7.2",
     "matplotlib_version": "3.11.2"
   },
@@ -112,16 +112,16 @@
       "average_precision": 0.6099603749136585,
       "brier_score": 0.1518748774953673,
       "log_loss": 0.4610431488205156,
-      "ece_10_bins": 0.02115583784508166
+      "ece_10_bins": 0.021155837845081668
     },
     "Hybrid (traditional + alternative)": {
       "roc_auc": 0.9097843260188088,
       "gini_coefficient": 0.8195686520376175,
       "ks_statistic": 0.6667084639498433,
       "average_precision": 0.8125609001516158,
-      "brier_score": 0.10334875727604928,
+      "brier_score": 0.1033487572760493,
       "log_loss": 0.329804240366135,
-      "ece_10_bins": 0.01105716506088341
+      "ece_10_bins": 0.011057165060883441
     },
     "Hybrid (HistGradientBoosting)": {
       "roc_auc": 0.9063235109717868,
